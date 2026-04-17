@@ -1,0 +1,290 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE html>
+<html b:css='false' b:js='true' b:responsive='true' b:version='2' expr:dir='data:blog.locale.languageDirection' expr:lang='data:blog.locale.language' xmlns='http://www.w3.org/1999/xhtml' xmlns:b='http://www.google.com/2005/gml/b' xmlns:data='http://www.google.com/2005/gml/data' xmlns:expr='http://www.google.com/2005/gml/expr'>
+
+<head>
+<meta expr:charset='data:blog.encoding'/>
+<meta content='width=device-width,initial-scale=1,maximum-scale=1,user-scalable=0' name='viewport'/>
+<title><data:blog.pageTitle/></title>
+<b:include data='blog' name='all-head-content'/>
+
+<b:skin><![CDATA[
+/*--- BD MOVIE ZONE - SCREENSHOT STYLE UI ---*/
+:root {
+    --bg-color: #05060a;
+    --card-bg: #111217;
+    --text-color: #f1f5f9;
+    --accent-red: #cc0000; /* Screenshot Red */
+    --accent-blue: #38bdf8;
+    --border-color: #222;
+    --skeleton-bg: #1a1b22;
+}
+
+body { background-color: var(--bg-color); color: var(--text-color); margin: 0; padding: 0; font-family: 'Poppins', 'Inter', sans-serif; scroll-behavior: smooth; overflow-x: hidden; }
+a { text-decoration: none; color: inherit; }
+
+/* Header */
+.header-top { background: #111217; padding: 15px; border-bottom: 1px solid var(--border-color); text-align: center; position: sticky; top: 0; z-index: 1000; box-shadow: 0 2px 10px rgba(0,0,0,0.5); }
+.logo a { font-size: 24px; font-weight: 900; color: #fff; text-transform: uppercase; letter-spacing: 2px; }
+
+/* 🔥 Red Category Buttons (Exact Screenshot Style) */
+.custom-nav-container { max-width: 1200px; margin: 15px auto; padding: 0 10px; text-align: center; }
+.custom-nav-container ul { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+.custom-nav-container li a {
+    background: var(--accent-red);
+    color: #fff;
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-weight: 800;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    text-transform: uppercase;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+    border-bottom: 3px solid rgba(0,0,0,0.3); /* 3D Effect like screenshot */
+    transition: 0.2s;
+}
+.custom-nav-container li a:hover { transform: translateY(-2px); background: #ff0000; }
+
+/* Search Box */
+.search-wrapper { max-width: 800px; margin: 20px auto; padding: 0 15px; }
+.search-form { display: flex; background: #111217; border: 1px solid #333; border-radius: 50px; overflow: hidden; height: 42px; transition: 0.3s; }
+.search-form input { background: transparent; border: none; padding: 0 20px; color: #fff; width: 100%; outline: none; font-size: 14px; }
+.search-form button { background: transparent; border: none; padding: 0 20px; cursor: pointer; color: var(--accent-blue); font-size: 18px; }
+
+/* Slider RGB */
+@keyframes rgb-border { 0% { border-color: #ff0000; } 50% { border-color: #38bdf8; } 100% { border-color: #ff0000; } }
+.slider-container { max-width: 1000px; margin: 10px auto; position: relative; overflow: hidden; border-radius: 12px; border: 1.5px solid #ff0000; animation: rgb-border 6s linear infinite; }
+.movie-slider { display: flex; transition: transform 0.7s cubic-bezier(0.4, 0, 0.2, 1); width: 100%; }
+.slide-item { min-width: 100%; aspect-ratio: 21/9; background: #000; }
+@media (max-width: 600px) { .slide-item { aspect-ratio: 16/8; } }
+.slide-item img { width: 100%; height: 100%; object-fit: cover; }
+.slide-content { position: absolute; bottom: 8px; right: 10px; z-index: 5; }
+.slide-btn { background: var(--accent-red); color: #fff; padding: 3px 10px; border-radius: 4px; font-weight: bold; font-size: 9px; text-transform: uppercase; }
+
+/* Grid Layout (3 Column Mobile) */
+.movie-grid { display: grid; grid-template-columns: repeat(6, 1fr); grid-gap: 10px; }
+@media (max-width: 1024px) { .movie-grid { grid-template-columns: repeat(4, 1fr); } }
+@media (max-width: 600px) { 
+    .movie-grid { grid-template-columns: repeat(3, 1fr); grid-gap: 8px; }
+    .m-title { font-size: 10px !important; height: 28px !important; }
+}
+
+/* Movie Card */
+.movie-card { background: var(--card-bg); border-radius: 6px; overflow: hidden; border: 1px solid var(--border-color); position: relative; transition: 0.3s; height: 100%; }
+.movie-card:hover { border-color: var(--accent-blue); transform: translateY(-3px); box-shadow: 0 5px 15px rgba(0,0,0,0.4); }
+@keyframes fadeInUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+.fade-in { animation: fadeInUp 0.5s ease backwards; }
+
+.poster-box { aspect-ratio: 2/3; overflow: hidden; background: #000; position: relative; }
+.poster-box img { width: 100%; height: 100%; object-fit: cover; }
+.poster-box::after { content: ''; position: absolute; top: 0; left: -150%; width: 100%; height: 100%; background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent); transition: 0.5s; }
+.movie-card:hover .poster-box::after { left: 150%; }
+
+.card-badge { position: absolute; top: 5px; left: 5px; background: var(--accent-red); color: #fff; font-size: 8px; font-weight: bold; padding: 2px 5px; border-radius: 3px; z-index: 2; }
+.card-rating { position: absolute; top: 5px; right: 5px; background: rgba(0,0,0,0.8); color: #facc15; font-size: 8px; font-weight: bold; padding: 2px 5px; border-radius: 3px; z-index: 2; border: 1px solid #facc15; }
+
+.movie-info { padding: 8px 4px; text-align: center; }
+.m-title { font-size: 11px; font-weight: 600; height: 30px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.3; color: #eee; }
+.m-meta { font-size: 9px; color: var(--accent-blue); font-weight: bold; margin-top: 3px; }
+
+/* Skeleton */
+@keyframes pulse { 0%, 100% { background-color: #1a1b22; } 50% { background-color: #25262e; } }
+.skeleton-card { background: var(--skeleton-bg); border-radius: 6px; aspect-ratio: 2/3.5; animation: pulse 1.5s infinite ease-in-out; }
+
+/* Buttons */
+#backToTop { position: fixed; bottom: 20px; right: 20px; background: var(--accent-blue); color: #000; width: 40px; height: 40px; border-radius: 50%; border: none; cursor: pointer; display: none; z-index: 1000; box-shadow: 0 4px 10px rgba(0,0,0,0.3); }
+.telegram-float { position: fixed; bottom: 70px; right: 20px; background: #0088cc; color: #fff; width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; z-index: 1000; box-shadow: 0 4px 10px rgba(0,0,0,0.3); transition: 0.3s; }
+
+/* Pagination */
+.pagination { display: flex; flex-direction: column; align-items: center; gap: 10px; margin: 40px 0; }
+.p-btn { background: var(--accent-blue); border: none; padding: 10px 25px; border-radius: 4px; color: #000; font-weight: bold; cursor: pointer; text-transform: uppercase; font-size: 11px; }
+.p-btn:disabled { opacity: 0.2; cursor: not-allowed; }
+
+/* Footer Labels */
+.bottom-labels { background: #111217; padding: 40px 10px; border-top: 1px solid #222; margin-top: 50px; text-align: center; }
+.label-list ul { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+.label-list li a { background: #1e1f26; border: 1px solid #333; color: #ccc; padding: 6px 15px; border-radius: 4px; font-size: 12px; display: inline-block; transition: 0.3s; }
+.label-list li a:hover { border-color: var(--accent-red); color: #fff; transform: translateY(-2px); }
+]]></b:skin>
+</head>
+
+<body>
+
+<div class='header-top'>
+    <div class='logo'><a expr:href='data:blog.homepageUrl'>BD MOVIE ZONE</a></div>
+</div>
+
+<!-- Data Helpers -->
+<input id='label-holder' type='hidden'>
+  <b:attr name='value' expr:value='data:view.isLabelSearch ? data:view.search.label : ""'/>
+</input>
+<input id='search-holder' type='hidden'>
+  <b:attr name='value' expr:value='data:view.isSearch ? data:view.search.query : ""'/>
+</input>
+
+<!-- 🔴 Category Navigation (Screenshot Style) -->
+<div class='custom-nav-container' style='margin-top:20px;'>
+  <b:section id='top-navigation' name='Category Buttons' showaddelement='yes'/>
+</div>
+
+<!-- Search Section -->
+<div class='search-wrapper'>
+    <div class='search-form'>
+        <input id='searchInput' placeholder='Search movies or series...' type='text'/>
+        <button onclick='doSearch()'><i class='fa fa-search'/></button>
+    </div>
+</div>
+
+<!-- RGB Slider -->
+<b:if cond='data:view.isHomepage'>
+  <div class='slider-container'>
+      <div class='movie-slider' id='movie-slider'/>
+  </div>
+</b:if>
+
+<div class='main-wrapper'>
+<b:section id='main-content' name='Main Content'>
+  <b:widget id='Blog1' locked='true' title='Blog Posts' type='Blog' version='1'>
+    <b:includable id='main' var='top'>
+      <b:if cond='data:view.isMultipleItems'>
+        <div class='section-head'>
+            <span id='grid-title'><b:if cond='data:view.isLabelSearch'><data:view.search.label/><b:elseif cond='data:view.isSearch'/>Search Result<b:else/>Latest Uploads</b:if></span>
+            <span id='total-stat' style='font-size:11px; color: var(--accent-blue);'/>
+        </div>
+        
+        <div id='movie-grid' class='movie-grid'>
+            <!-- Skeleton placeholders first -->
+        </div>
+
+        <div class='pagination'>
+            <div id='page-info' style='color:#666; font-size:12px; font-weight:bold;'/>
+            <div style='display:flex; gap:10px;'>
+                <button class='p-btn' id='prevB' onclick='changePage(-1)'>BACK</button>
+                <button class='p-btn' id='nextB' onclick='changePage(1)'>NEXT</button>
+            </div>
+        </div>
+
+        <script>//<![CDATA[
+          var perPage = 12, currentPage = 1, totalPosts = 0;
+          function init() {
+            var label = document.getElementById('label-holder').value.trim();
+            var query = document.getElementById('search-holder').value.trim();
+            if(window.location.pathname === "/" || window.location.pathname === "/index.html") { loadSlider(); }
+            showSkeletons();
+            var feedBase = "/feeds/posts/default";
+            if(label !== "") { feedBase += "/-/" + encodeURIComponent(label); }
+            var metaUrl = feedBase + "?alt=json&max-results=0";
+            if(label === "" && query !== "") { metaUrl += "&q=" + encodeURIComponent(query); }
+            fetch(metaUrl).then(r => r.json()).then(d => {
+                totalPosts = parseInt(d.feed.openSearch$totalResults.$t);
+                document.getElementById('total-stat').innerText = "Total: " + totalPosts;
+                loadMovies(feedBase, label, query);
+            }).catch(e => loadMovies(feedBase, label, query));
+          }
+
+          function showSkeletons() {
+            var grid = document.getElementById('movie-grid');
+            var skelHtml = "";
+            for(var i=0; i<perPage; i++) { skelHtml += `<div class="skeleton-card"></div>`; }
+            grid.innerHTML = skelHtml;
+          }
+
+          function loadSlider() {
+            fetch("/feeds/posts/default?alt=json&max-results=6").then(r => r.json()).then(data => {
+                var slider = document.getElementById('movie-slider'), html = "";
+                data.feed.entry.forEach(post => {
+                    var link = post.link.find(l => l.rel === 'alternate').href;
+                    var temp = document.createElement('div'); temp.innerHTML = post.content.$t;
+                    var backdrop = "https://via.placeholder.com/1000x400?text=Poster";
+                    var imgs = temp.querySelectorAll('img');
+                    for (var i = 0; i < imgs.length; i++) {
+                        if (imgs[i].src.includes('780') || imgs[i].src.includes('original')) {
+                            backdrop = imgs[i].src.replace('/w500/', '/original/').replace('/w400/', '/original/');
+                            break;
+                        } else if (i === 0) { backdrop = imgs[i].src; }
+                    }
+                    html += `<div class="slide-item"><a href="${link}"><img src="${backdrop}"/><div class="slide-content"><div class="slide-btn">Watch Now</div></div></a></div>`;
+                });
+                if(slider) slider.innerHTML = html;
+                startAutoSlide();
+            });
+          }
+
+          var slideIdx = 0;
+          function startAutoSlide() {
+            setInterval(() => { slideIdx++; if(slideIdx >= 6) slideIdx = 0;
+                var s = document.getElementById('movie-slider'); if(s) s.style.transform = `translateX(-${slideIdx * 100}%)`;
+            }, 5000);
+          }
+
+          function loadMovies(feedBase, label, query) {
+            var grid = document.getElementById('movie-grid');
+            var start = ((currentPage - 1) * perPage) + 1;
+            var url = feedBase + "?alt=json&start-index=" + start + "&max-results=" + perPage;
+            if(label === "" && query !== "") { url += "&q=" + encodeURIComponent(query); }
+            fetch(url).then(r => r.json()).then(d => {
+                grid.innerHTML = "";
+                if(d.feed.entry) {
+                    d.feed.entry.forEach((post, index) => {
+                        var t = post.title.$t, link = post.link.find(l => l.rel === 'alternate').href;
+                        var temp = document.createElement('div'); temp.innerHTML = post.content.$t;
+                        var img = "https://via.placeholder.com/300x450?text=No+Poster", fImg = temp.querySelector('img');
+                        if(fImg) img = fImg.src.replace('/w500/', '/original/').replace('/w400/', '/original/');
+                        var rating = "N/A", lang = "Unknown", year = "";
+                        var info = temp.querySelectorAll('.info-text div');
+                        info.forEach(div => {
+                            var txt = div.innerText;
+                            if(txt.includes('Rating:')) rating = txt.split('Rating:')[1].trim().split('/')[0];
+                            if(txt.includes('Language:')) lang = txt.split('Language:')[1].trim();
+                            if(txt.includes('Release:')) year = txt.split('Release:')[1].trim();
+                        });
+                        var pBadge = lang.split(' ')[0];
+                        var card = document.createElement('div');
+                        card.className = "movie-card fade-in";
+                        card.style.animationDelay = (index * 0.05) + "s";
+                        card.innerHTML = `<a href="${link}"><div class="poster-box"><div class="card-badge">${pBadge}</div><div class="card-rating">⭐ ${rating}</div><img src="${img}"/></div><div class="movie-info"><div class="m-title">${t}</div><div class="m-meta">${lang} ${year ? '('+year+')' : ''}</div></div></a>`;
+                        grid.appendChild(card);
+                    });
+                }
+                var tp = Math.ceil(totalPosts / perPage);
+                document.getElementById('page-info').innerText = "PAGE " + currentPage + " OF " + (tp || 1);
+                document.getElementById('prevB').disabled = (currentPage <= 1);
+                document.getElementById('nextB').disabled = (currentPage >= tp);
+                window.scrollTo({top:0, behavior:'smooth'});
+            });
+          }
+
+          function changePage(d) { currentPage += d; init(); }
+          function doSearch() { var v = document.getElementById('searchInput').value; if(v) { window.location.href = "/search?q=" + encodeURIComponent(v); } }
+          window.onscroll = function() { var b = document.getElementById("backToTop"); if(document.body.scrollTop > 400 || document.documentElement.scrollTop > 400) b.style.display = "block"; else b.style.display = "none"; };
+          function scrollToTop() { window.scrollTo({top: 0, behavior: 'smooth'}); }
+          window.onload = init;
+        //]]></script>
+        
+        <button id='backToTop' onclick='scrollToTop()'><i class='fa fa-arrow-up'/></button>
+        <a class='telegram-float' href='https://t.me/YOUR_CHANNEL' target='_blank'><i class='fab fa-telegram-plane'/></a>
+      <b:else/>
+        <div style='max-width:900px; margin:0 auto; padding:15px; background:#111217; border-radius:10px;'>
+            <b:loop values='data:posts' var='post'><data:post.body/></b:loop>
+        </div>
+      </b:if>
+    </b:includable>
+  </b:widget>
+</b:section>
+</div>
+
+<!-- Categories Footer -->
+<div class='bottom-labels'>
+    <div class='main-wrapper'>
+        <h3 style='color:var(--accent-red); margin-bottom: 20px; text-transform: uppercase; font-size: 16px;'>📂 Categories</h3>
+        <div class='label-list'>
+            <b:section id='bottom-label-section' name='Bottom Labels' showaddelement='yes'/>
+        </div>
+    </div>
+</div>
+
+<link href='https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css' rel='stylesheet'/>
+</body>
+</html>
