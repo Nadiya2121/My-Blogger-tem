@@ -1,0 +1,252 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE html>
+<html b:css='false' b:js='true' b:responsive='true' b:version='2' expr:dir='data:blog.locale.languageDirection' expr:lang='data:blog.locale.language' xmlns='http://www.w3.org/1999/xhtml' xmlns:b='http://www.google.com/2005/gml/b' xmlns:data='http://www.google.com/2005/gml/data' xmlns:expr='http://www.google.com/2005/gml/expr'>
+
+<head>
+<meta expr:charset='data:blog.encoding'/>
+<meta content='width=device-width,initial-scale=1,maximum-scale=1,user-scalable=0' name='viewport'/>
+<title><data:blog.pageTitle/></title>
+<b:include data='blog' name='all-head-content'/>
+
+<b:skin><![CDATA[
+/*--- BD MOVIE ZONE - 100% WORKING FINAL ---*/
+:root {
+    --bg-color: #0d0e12;
+    --card-bg: #16171d;
+    --text-color: #f1f5f9;
+    --accent-red: #cc0000;
+    --accent-blue: #14b8a6;
+    --border-color: #222;
+}
+
+body { background-color: var(--bg-color); color: var(--text-color); margin: 0; padding: 0; font-family: 'Poppins', sans-serif; }
+a { text-decoration: none; color: inherit; }
+
+/* Header & Logo */
+.header-top { background: #111217; padding: 15px; border-bottom: 1px solid var(--border-color); text-align: center; position: sticky; top: 0; z-index: 1000; }
+.logo a { font-size: 24px; font-weight: 900; color: #fff; text-transform: uppercase; letter-spacing: 1px; }
+
+/* Red Buttons Area */
+.custom-nav-container { max-width: 1200px; margin: 15px auto; padding: 0 10px; text-align: center; }
+.custom-nav-container ul { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+.custom-nav-container li a {
+    background: var(--accent-red); color: #fff; padding: 8px 16px; border-radius: 6px; font-weight: bold; font-size: 13px; display: inline-block; box-shadow: 0 4px 10px rgba(0,0,0,0.3); text-transform: uppercase;
+}
+
+/* Big Search Bar UI */
+.search-wrapper { max-width: 1200px; margin: 20px auto; padding: 0 10px; }
+.search-form { display: flex; background: #111217; border: 2px solid var(--accent-blue); border-radius: 8px; overflow: hidden; height: 55px; }
+.search-form input { background: transparent; border: none; padding: 0 15px; color: #fff; width: 100%; outline: none; font-size: 16px; }
+.search-form button { background: var(--accent-blue); border: none; padding: 0 20px; cursor: pointer; color: #fff; font-size: 20px; }
+
+/* Grid Layout */
+.main-wrapper { max-width: 1240px; margin: 15px auto; padding: 0 10px; }
+.section-head { margin-bottom: 15px; padding: 12px; border-left: 4px solid var(--accent-red); background: #111217; font-weight: bold; border-radius: 0 4px 4px 0; display: flex; justify-content: space-between; align-items: center; }
+
+.movie-grid { display: grid; grid-template-columns: repeat(6, 1fr); grid-gap: 12px; min-height: 400px; }
+@media (max-width: 1000px) { .movie-grid { grid-template-columns: repeat(4, 1fr); } }
+@media (max-width: 600px) { .movie-grid { grid-template-columns: repeat(2, 1fr); } }
+
+.movie-card { background: var(--card-bg); border-radius: 8px; overflow: hidden; border: 1px solid var(--border-color); position: relative; transition: 0.3s; height: 100%; display: flex; flex-direction: column; }
+.movie-card:hover { border-color: var(--accent-blue); transform: translateY(-5px); }
+.poster-box { aspect-ratio: 2/3; overflow: hidden; position: relative; background: #000; }
+.poster-box img { width: 100%; height: 100%; object-fit: cover; }
+
+.card-badge { position: absolute; top: 8px; left: 8px; background: #cc0000; color: #fff; font-size: 9px; font-weight: 900; padding: 2px 6px; border-radius: 3px; z-index: 2; text-transform: uppercase; }
+.card-rating { position: absolute; top: 8px; right: 8px; background: rgba(0,0,0,0.8); color: #facc15; font-size: 10px; font-weight: 800; padding: 2px 6px; border-radius: 3px; z-index: 2; border: 1px solid #facc15; }
+
+.movie-info { padding: 10px 5px; text-align: center; flex-grow: 1; }
+.m-title { font-size: 12px; font-weight: 600; height: 34px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.4; color: #fff; margin-bottom: 5px; }
+.m-meta { font-size: 10px; color: var(--accent-blue); font-weight: bold; }
+
+/* Pagination Styling */
+.pagination { display: flex; flex-direction: column; align-items: center; gap: 10px; margin: 40px 0; }
+.p-btn { background: var(--accent-blue); border: none; padding: 10px 25px; border-radius: 5px; color: #fff; font-weight: bold; cursor: pointer; text-transform: uppercase; font-size: 12px; }
+.p-btn:disabled { opacity: 0.2; cursor: not-allowed; }
+
+#loader { text-align: center; padding: 50px; color: var(--accent-blue); font-weight: bold; display: none; }
+]]></b:skin>
+</head>
+
+<body>
+
+<div class='header-top'>
+    <div class='logo'><a expr:href='data:blog.homepageUrl'>BD MOVIE ZONE</a></div>
+</div>
+
+<!-- 📂 Data Holders (আপনার কোড অনুযায়ী) -->
+<input id='label-holder' type='hidden'>
+  <b:attr name='value' expr:value='data:view.isLabelSearch ? data:view.search.label : ""'/>
+</input>
+<input id='search-holder' type='hidden'>
+  <b:attr name='value' expr:value='data:view.isSearch ? data:view.search.query : ""'/>
+</input>
+
+<div class='custom-nav-container'>
+  <b:section id='top-navigation' name='Category Buttons' showaddelement='yes'/>
+</div>
+
+<div class='search-wrapper'>
+    <div class='search-form'>
+        <input id='searchInput' placeholder='সার্চ করে খুঁজে নিন পছন্দের মুভি' type='text'/>
+        <button onclick='doSearch()'><i class='fa fa-search'/></button>
+    </div>
+</div>
+
+<div class='main-wrapper'>
+<b:section id='main-content' name='Main Content'>
+  <b:widget id='Blog1' locked='true' title='Blog Posts' type='Blog' version='1'>
+    <b:includable id='main' var='top'>
+      
+      <b:if cond='data:view.isMultipleItems'>
+        <div class='section-head'>
+            <span id='grid-title'>
+               <b:if cond='data:view.isLabelSearch'><data:view.search.label/> Movies
+               <b:elseif cond='data:view.isSearch'/>Search Results
+               <b:else/>Latest Uploads</b:if>
+            </span>
+            <span id='total-stat' style='font-size:10px; opacity:0.6;'/>
+        </div>
+
+        <div id='movie-grid' class='movie-grid'/>
+        <div id='loader'>LOADING...</div>
+
+        <div class='pagination'>
+            <div id='page-info' style='color:#777; font-size:13px; font-weight:bold; margin-bottom:5px;'/>
+            <div style='display:flex; gap:15px;'>
+                <button class='p-btn' id='prevB' onclick='changePage(-1)'>BACK</button>
+                <button class='p-btn' id='nextB' onclick='changePage(1)'>NEXT</button>
+            </div>
+        </div>
+
+        <script>//<![CDATA[
+          var perPage = 12;
+          var currentPage = 1;
+          var totalPosts = 0;
+
+          function startWork() {
+            var activeLabel = document.getElementById('label-holder').value.trim();
+            var searchQuery = document.getElementById('search-holder').value.trim();
+            
+            var feedBase = "/feeds/posts/default";
+
+            // লেবেল ফিল্টার থাকলে পাথ পরিবর্তন
+            if(activeLabel !== "") {
+               feedBase += "/-/" + encodeURIComponent(activeLabel);
+            }
+
+            // মেটা ডাটা কল (Total Results এর জন্য)
+            var metaUrl = feedBase + "?alt=json&max-results=0";
+            if(activeLabel === "" && searchQuery !== "") {
+               metaUrl += "&q=" + encodeURIComponent(searchQuery);
+            }
+
+            fetch(metaUrl).then(r => r.json()).then(d => {
+                totalPosts = parseInt(d.feed.openSearch$totalResults.$t);
+                document.getElementById('total-stat').innerText = "Total: " + totalPosts;
+                loadMovies(feedBase, activeLabel, searchQuery);
+            }).catch(e => loadMovies(feedBase, activeLabel, searchQuery));
+          }
+
+          function loadMovies(feedBase, activeLabel, searchQuery) {
+            var grid = document.getElementById('movie-grid');
+            var loader = document.getElementById('loader');
+            var startIndex = ((currentPage - 1) * perPage) + 1;
+            
+            loader.style.display = 'block';
+            grid.style.opacity = '0.3';
+
+            var finalUrl = feedBase + "?alt=json&start-index=" + startIndex + "&max-results=" + perPage;
+
+            // শুধু সার্চ হলে q= প্যারামিটার যোগ হবে
+            if(activeLabel === "" && searchQuery !== "") {
+               finalUrl += "&q=" + encodeURIComponent(searchQuery);
+            }
+
+            fetch(finalUrl).then(r => r.json()).then(d => {
+                grid.innerHTML = "";
+                if(d.feed.entry) {
+                    d.feed.entry.forEach(post => {
+                        var title = post.title.$t;
+                        var link = post.link.find(l => l.rel === 'alternate').href;
+                        var content = post.content ? post.content.$t : "";
+                        var temp = document.createElement('div');
+                        temp.innerHTML = content;
+
+                        // ইমেজ এক্সট্রাকশন (Original Quality)
+                        var img = "https://via.placeholder.com/300x450?text=No+Poster";
+                        var firstImg = temp.querySelector('img');
+                        if(firstImg) {
+                            img = firstImg.src.replace('/w500/', '/original/').replace('/w400/', '/original/');
+                        }
+
+                        // রেটিং ও মেটা ডাটা
+                        var rating = "N/A", lang = "Unknown", year = "";
+                        var infoDivs = temp.querySelectorAll('.info-text div');
+                        infoDivs.forEach(div => {
+                            var t = div.innerText;
+                            if(t.includes('Rating:')) rating = t.split('Rating:')[1].trim().split('/')[0];
+                            if(t.includes('Language:')) lang = t.split('Language:')[1].trim();
+                            if(t.includes('Release:')) year = t.split('Release:')[1].trim();
+                        });
+
+                        var posterBadge = lang.split(' ')[0];
+                        if(!posterBadge || posterBadge === "Unknown") {
+                           var bEl = temp.querySelector('.badge');
+                           posterBadge = bEl ? bEl.innerText : "HD";
+                        }
+
+                        grid.innerHTML += `
+                          <div class="movie-card">
+                            <a href="${link}">
+                                <div class="poster-box">
+                                    <div class="card-badge">${posterBadge}</div>
+                                    <div class="card-rating">⭐ ${rating}</div>
+                                    <img src="${img}" alt="${title}"/>
+                                </div>
+                                <div class="movie-info">
+                                    <div class="m-title">${title}</div>
+                                    <div class="m-meta">${lang} ${year ? '('+year+')' : ''}</div>
+                                </div>
+                            </a>
+                          </div>`;
+                    });
+                } else {
+                    grid.innerHTML = "<p style='grid-column:1/-1; text-align:center;'>কোনো মুভি পাওয়া যায়নি।</p>";
+                }
+                
+                var tp = Math.ceil(totalPosts / perPage);
+                document.getElementById('page-info').innerText = "PAGE " + currentPage + " OF " + (tp || 1);
+                document.getElementById('prevB').disabled = (currentPage <= 1);
+                document.getElementById('nextB').disabled = (currentPage >= tp);
+
+                loader.style.display = 'none';
+                grid.style.opacity = '1';
+                window.scrollTo({top:0, behavior:'smooth'});
+            });
+          }
+
+          function changePage(d) { currentPage += d; startWork(); }
+          function doSearch() {
+            var v = document.getElementById('searchInput').value;
+            if(v) { window.location.href = "/search?q=" + encodeURIComponent(v); }
+          }
+          window.onload = startWork;
+        //]]></script>
+      
+      <b:else/>
+        <div style='max-width:900px; margin:0 auto; padding:15px; background:#111217; border-radius:10px;'>
+            <b:loop values='data:posts' var='post'>
+                <data:post.body/>
+            </b:loop>
+        </div>
+      </b:if>
+
+    </b:includable>
+  </b:widget>
+</b:section>
+</div>
+
+<link href='https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css' rel='stylesheet'/>
+</body>
+</html>
