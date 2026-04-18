@@ -1,0 +1,386 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE html>
+<html b:css='false' b:js='true' b:responsive='true' b:version='2' expr:dir='data:blog.locale.languageDirection' expr:lang='data:blog.locale.language' xmlns='http://www.w3.org/1999/xhtml' xmlns:b='http://www.google.com/2005/gml/b' xmlns:data='http://www.google.com/2005/gml/data' xmlns:expr='http://www.google.com/2005/gml/expr'>
+
+<head>
+<meta expr:charset='data:blog.encoding'/>
+<meta content='width=device-width,initial-scale=1,maximum-scale=1,user-scalable=0' name='viewport'/>
+<title><data:blog.pageTitle/></title>
+<b:include data='blog' name='all-head-content'/>
+
+<b:skin><![CDATA[
+/*--- BD MOVIE ZONE - THE FINAL PRO MASTER ---*/
+:root {
+    --bg-color: #05060a;
+    --card-bg: #111217;
+    --text-color: #f1f5f9;
+    --accent-red: #cc0000;
+    --accent-blue: #38bdf8;
+    --border-color: #222;
+    --skeleton-bg: #1a1b22;
+}
+
+body { background-color: var(--bg-color); color: var(--text-color); margin: 0; padding: 0; font-family: 'Poppins', 'Inter', sans-serif; scroll-behavior: smooth; overflow-x: hidden; }
+a { text-decoration: none; color: inherit; }
+
+/* Header with Centered Gradient Logo */
+.header-top { background: #111217; padding: 12px 20px; border-bottom: 1px solid var(--border-color); position: sticky; top: 0; z-index: 1000; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 2px 15px rgba(0,0,0,0.6); }
+
+.logo { flex-grow: 1; text-align: center; margin-left: 45px; }
+.logo a { 
+    font-size: 26px; font-weight: 900; text-transform: uppercase; letter-spacing: 3px; 
+    background: linear-gradient(to right, #ff0000, #38bdf8);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    filter: drop-shadow(0 0 8px rgba(56, 189, 248, 0.4)); transition: 0.3s;
+}
+.logo a:hover { filter: drop-shadow(0 0 12px rgba(255, 0, 0, 0.6)); letter-spacing: 4px; }
+
+@media (max-width: 600px) { .logo a { font-size: 20px; letter-spacing: 1px; } .logo { margin-left: 25px; } }
+
+/* 18+ Switch Style */
+.adult-switch-box { display: flex; align-items: center; gap: 8px; background: #1a1b22; padding: 5px 12px; border-radius: 50px; border: 1px solid #333; }
+.adult-txt { font-size: 10px; font-weight: 800; color: #ff4d4d; text-transform: uppercase; }
+.switch { position: relative; display: inline-block; width: 34px; height: 18px; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.slider-toggle { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #333; transition: .4s; border-radius: 34px; }
+.slider-toggle:before { position: absolute; content: ""; height: 12px; width: 12px; left: 3px; bottom: 3px; background-color: white; transition: .4s; border-radius: 50%; }
+input:checked + .slider-toggle { background-color: var(--accent-red); }
+input:checked + .slider-toggle:before { transform: translateX(16px); }
+
+/* Adult Blur Logic */
+.is-adult-post .poster-box img, .is-adult-post .trending-poster img, .is-adult-post .slide-item img { filter: blur(30px); transition: 0.3s; }
+.is-adult-post .poster-box::before, .is-adult-post .trending-poster::before { content: '18+'; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(204, 0, 0, 0.95); color: #fff; padding: 4px 10px; border-radius: 4px; font-weight: 900; z-index: 5; font-size: 14px; border: 1px solid #fff; }
+body.adult-mode-on .is-adult-post img { filter: blur(0) !important; }
+body.adult-mode-on .is-adult-post::before { display: none !important; }
+
+/* Navigation Buttons */
+.custom-nav-container { max-width: 1200px; margin: 20px auto; padding: 0 10px; text-align: center; }
+.custom-nav-container ul { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+.custom-nav-container li a { background: var(--accent-red); color: #fff; padding: 8px 16px; border-radius: 8px; font-weight: 800; font-size: 14px; text-transform: uppercase; box-shadow: 0 4px 6px rgba(0,0,0,0.3); border-bottom: 3px solid rgba(0,0,0,0.3); }
+
+/* Search Box Style */
+.search-wrapper { max-width: 800px; margin: 20px auto; padding: 0 15px; }
+.search-form { display: flex; background: #111217; border: 1px solid #333; border-radius: 50px; overflow: hidden; height: 42px; transition: 0.3s; }
+.search-form input { background: transparent; border: none; padding: 0 20px; color: #fff; width: 100%; outline: none; font-size: 14px; }
+.search-form button { background: transparent; border: none; padding: 0 20px; cursor: pointer; color: var(--accent-blue); font-size: 18px; }
+
+/* RGB Slider - Corrected Aspect Ratio */
+@keyframes rgb-border { 0% { border-color: #ff0000; } 50% { border-color: #38bdf8; } 100% { border-color: #ff0000; } }
+.slider-container { max-width: 1000px; margin: 10px auto; position: relative; overflow: hidden; border-radius: 12px; border: 1.5px solid #ff0000; animation: rgb-border 6s linear infinite; }
+.movie-slider { display: flex; transition: transform 0.7s cubic-bezier(0.4, 0, 0.2, 1); width: 100%; }
+.slide-item { min-width: 100%; aspect-ratio: 16/7.5; background: #000; position: relative; }
+@media (max-width: 600px) { .slide-item { aspect-ratio: 16/9; } }
+.slide-item img { width: 100%; height: 100%; object-fit: cover; }
+.slide-content { position: absolute; bottom: 8px; right: 10px; z-index: 5; }
+.slide-btn { background: var(--accent-red); color: #fff; padding: 3px 10px; border-radius: 4px; font-weight: bold; font-size: 9px; text-transform: uppercase; }
+
+/* Trending Now Section (Side Scroll) */
+.trending-section { max-width: 1000px; margin: 25px auto; padding: 0 10px; }
+.trending-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; font-size: 16px; font-weight: 900; color: #fff; text-transform: uppercase; border-left: 4px solid var(--accent-red); padding-left: 10px; }
+.trending-scroll-container { overflow-x: auto; white-space: nowrap; scrollbar-width: none; -ms-overflow-style: none; }
+.trending-scroll-container::-webkit-scrollbar { display: none; }
+.trending-wrapper { display: flex; gap: 12px; width: max-content; }
+.trending-item { width: calc(33vw - 20px); max-width: 170px; flex-shrink: 0; background: var(--card-bg); border-radius: 8px; border: 1px solid #222; overflow: hidden; position: relative; }
+.trending-poster { aspect-ratio: 2/3; position: relative; overflow: hidden; }
+.trending-poster img { width: 100%; height: 100%; object-fit: cover; }
+.trending-title { font-size: 10px; font-weight: 700; padding: 8px 4px; color: #fff; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; background: #16171d; }
+
+/* Movie Grid & Card Badges */
+.movie-grid { display: grid; grid-template-columns: repeat(6, 1fr); grid-gap: 10px; }
+@media (max-width: 1024px) { .movie-grid { grid-template-columns: repeat(4, 1fr); } }
+@media (max-width: 600px) { .movie-grid { grid-template-columns: repeat(3, 1fr); grid-gap: 8px; } }
+.movie-card { background: var(--card-bg); border-radius: 6px; overflow: hidden; border: 1px solid var(--border-color); position: relative; transition: 0.3s; height: 100%; display: flex; flex-direction: column; }
+.movie-card:hover { border-color: var(--accent-blue); transform: translateY(-3px); }
+.poster-box { aspect-ratio: 2/3; overflow: hidden; background: #000; position: relative; }
+.poster-box img { width: 100%; height: 100%; object-fit: cover; transition: 0.5s; }
+.card-badge { position: absolute; top: 5px; left: 5px; background: var(--accent-red); color: #fff; font-size: 8px; font-weight: bold; padding: 2px 5px; border-radius: 3px; z-index: 2; }
+.card-rating { position: absolute; top: 5px; right: 5px; background: rgba(0,0,0,0.8); color: #facc15; font-size: 8px; font-weight: bold; padding: 2px 5px; border-radius: 3px; z-index: 2; border: 1px solid #facc15; }
+.movie-info { padding: 8px 4px; text-align: center; }
+.m-title { font-size: 11px; font-weight: 600; height: 30px; overflow: hidden; color: #eee; line-height: 1.3; }
+.m-meta { font-size: 9px; color: var(--accent-blue); font-weight: bold; margin-top: 3px; }
+
+/* Similar Movies Styling */
+.related-movies-box { margin-top: 40px; padding: 20px 0; border-top: 1px solid #222; }
+.related-title { font-size: 18px; font-weight: bold; color: var(--accent-blue); margin-bottom: 15px; display: flex; align-items: center; gap: 10px; }
+
+/* Pagination & Floating Buttons */
+.skeleton-card { background: var(--skeleton-bg); border-radius: 6px; aspect-ratio: 2/3.5; animation: pulse 1.5s infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+.pagination { display: flex; flex-direction: column; align-items: center; gap: 15px; margin: 40px 0; }
+.p-btn { background: var(--accent-blue); color: #000; padding: 12px 35px; border-radius: 6px; font-weight: 800; cursor: pointer; border: none; font-size: 13px; text-transform: uppercase; }
+.p-btn:disabled { opacity: 0.3; }
+
+#backToTop { position: fixed; bottom: 20px; right: 20px; background: var(--accent-blue); color: #000; width: 40px; height: 40px; border-radius: 50%; border: none; display: none; z-index: 1000; cursor: pointer; }
+.telegram-float { position: fixed; bottom: 70px; right: 20px; background: #0088cc; color: #fff; width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; z-index: 1000; }
+
+.bottom-labels { background: #111217; padding: 40px 10px; border-top: 1px solid #222; margin-top: 50px; text-align: center; }
+.label-list ul { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+.label-list li a { background: #1e1f26; border: 1px solid #333; color: #ccc; padding: 6px 15px; border-radius: 4px; font-size: 12px; transition: 0.3s; }
+]]></b:skin>
+</head>
+
+<body>
+
+<div class='header-top'>
+    <div style='width: 80px;'/>
+    <div class='logo'><a expr:href='data:blog.homepageUrl'>BD MOVIE ZONE</a></div>
+    <div class='adult-switch-box'>
+        <span class='adult-txt'>18+ Mode</span>
+        <label class='switch'>
+          <input id='adultToggle' onchange='toggleAdultMode()' type='checkbox'/>
+          <span class='slider-toggle'/>
+        </label>
+    </div>
+</div>
+
+<input id='label-holder' type='hidden'>
+  <b:attr name='value' expr:value='data:view.isLabelSearch ? data:view.search.label : ""'/>
+</input>
+<input id='search-holder' type='hidden'>
+  <b:attr name='value' expr:value='data:view.isSearch ? data:view.search.query : ""'/>
+</input>
+
+<div class='custom-nav-container'>
+  <b:section id='top-navigation' name='Top Nav Buttons' showaddelement='yes'/>
+</div>
+
+<div class='search-wrapper'>
+    <div class='search-form'>
+        <input id='searchInput' placeholder='Search movies or series...' type='text'/>
+        <button onclick='doSearch()'><i class='fa fa-search'/></button>
+    </div>
+</div>
+
+<b:if cond='data:view.isHomepage'>
+  <div class='slider-container'>
+      <div class='movie-slider' id='movie-slider'/>
+  </div>
+
+  <div class='trending-section'>
+      <div class='trending-head'><i class='fas fa-fire' style='color:#ffcc00'/> Trending Now</div>
+      <div class='trending-scroll-container' id='trending-container'>
+          <div class='trending-wrapper' id='trending-now'>
+              <!-- Posts Load Here -->
+          </div>
+      </div>
+  </div>
+</b:if>
+
+<div class='main-wrapper'>
+<b:section id='main-content' name='Main Content'>
+  <b:widget id='Blog1' locked='true' title='Blog Posts' type='Blog' version='1'>
+    <b:includable id='main' var='top'>
+      
+      <b:if cond='data:view.isMultipleItems'>
+        <div id='movie-grid' class='movie-grid'><!-- Skeleton --></div>
+        <div class='pagination'>
+            <div id='page-info' style='color:#666; font-size:13px; font-weight:bold;'/>
+            <div style='display:flex; gap:15px;'>
+                <button class='p-btn' id='prevB' onclick='changePage(-1)'><i class='fas fa-arrow-left'/> BACK</button>
+                <button class='p-btn' id='nextB' onclick='changePage(1)'>NEXT <i class='fas fa-arrow-right'/></button>
+            </div>
+        </div>
+
+        <script>//<![CDATA[
+          var perPage = 12, currentPage = 1, totalPosts = 0;
+
+          function toggleAdultMode() {
+            var isChecked = document.getElementById('adultToggle').checked;
+            if(isChecked) { document.body.classList.add('adult-mode-on'); localStorage.setItem('adultMode', 'enabled'); } 
+            else { document.body.classList.remove('adult-mode-on'); localStorage.setItem('adultMode', 'disabled'); }
+          }
+
+          function checkAdultPreference() {
+            var pref = localStorage.getItem('adultMode');
+            if(pref === 'enabled') {
+                if(document.getElementById('adultToggle')) document.getElementById('adultToggle').checked = true;
+                document.body.classList.add('adult-mode-on');
+            }
+          }
+
+          function init() {
+            checkAdultPreference();
+            var label = document.getElementById('label-holder').value.trim();
+            var query = document.getElementById('search-holder').value.trim();
+            if(window.location.pathname === "/" || window.location.pathname === "/index.html") { 
+                loadSlider(); 
+                loadTrending(); 
+            }
+            showSkeletons('movie-grid', 12);
+            var feedBase = "/feeds/posts/default";
+            if(label !== "") { feedBase += "/-/" + encodeURIComponent(label); }
+            fetch(feedBase + "?alt=json&max-results=0").then(r => r.json()).then(d => {
+                totalPosts = parseInt(d.feed.openSearch$totalResults.$t);
+                loadMovies(feedBase, label, query, 'movie-grid', perPage, true);
+            });
+          }
+
+          function loadSlider() {
+            fetch("/feeds/posts/default?alt=json&max-results=6").then(r => r.json()).then(data => {
+                var slider = document.getElementById('movie-slider'), html = "";
+                data.feed.entry.forEach(post => {
+                    var link = post.link.find(l => l.rel === 'alternate').href;
+                    var isAdult = false;
+                    if(post.category) post.category.forEach(c => { if(c.term === "adult Movie And Series") isAdult = true; });
+                    var temp = document.createElement('div'); temp.innerHTML = post.content.$t;
+                    var backdrop = "https://via.placeholder.com/1000x400?text=Poster";
+                    var imgs = temp.querySelectorAll('img');
+                    // Backdrop Picker Logic
+                    for (var i = 0; i < imgs.length; i++) {
+                        if (imgs[i].src.includes('780') || imgs[i].src.includes('original')) {
+                            backdrop = imgs[i].src.replace('/w500/', '/original/');
+                            break;
+                        } else if (i === 1) { backdrop = imgs[i].src; } // Takes 2nd image
+                    }
+                    html += `<div class="slide-item ${isAdult ? 'is-adult-post' : ''}"><a href="${link}"><img src="${backdrop}"/><div class="slide-content"><div class="slide-btn">Watch Now</div></div></a></div>`;
+                });
+                if(slider) slider.innerHTML = html;
+                startAutoSlide();
+            });
+          }
+
+          var slideIdx = 0;
+          function startAutoSlide() { setInterval(() => { slideIdx++; if(slideIdx >= 6) slideIdx = 0; var s = document.getElementById('movie-slider'); if(s) s.style.transform = `translateX(-${slideIdx * 100}%)`; }, 5000); }
+
+          function loadTrending() {
+            fetch("/feeds/posts/default/-/Trending?alt=json&max-results=12").then(r => r.json()).then(data => {
+                var trending = document.getElementById('trending-now'), html = "";
+                if(data.feed.entry) {
+                    data.feed.entry.forEach(post => {
+                        var t = post.title.$t, link = post.link.find(l => l.rel === 'alternate').href;
+                        var isAdult = false;
+                        if(post.category) post.category.forEach(c => { if(c.term === "adult Movie And Series") isAdult = true; });
+                        var temp = document.createElement('div'); temp.innerHTML = post.content.$t;
+                        var img = temp.querySelector('img') ? temp.querySelector('img').src : "";
+                        html += `<div class="trending-item ${isAdult ? 'is-adult-post' : ''}"><a href="${link}"><div class="trending-poster"><img src="${img}"/></div><span class="trending-title">${t}</span></a></div>`;
+                    });
+                    if(trending) { trending.innerHTML = html; startAutoScroll(); }
+                }
+            });
+          }
+
+          function startAutoScroll() {
+            var container = document.getElementById('trending-container');
+            var isHovered = false;
+            container.onmouseenter = () => isHovered = true;
+            container.onmouseleave = () => isHovered = false;
+            setInterval(() => {
+                if(!isHovered) {
+                    container.scrollLeft += 1;
+                    if (container.scrollLeft >= (container.scrollWidth - container.clientWidth - 1)) { container.scrollLeft = 0; }
+                }
+            }, 30);
+          }
+
+          function showSkeletons(targetId, count) {
+            var grid = document.getElementById(targetId);
+            var skelHtml = ""; for(var i=0; i<count; i++) { skelHtml += `<div class="skeleton-card"></div>`; }
+            grid.innerHTML = skelHtml;
+          }
+
+          function loadMovies(feedBase, label, query, gridId, count, isPagination) {
+            var grid = document.getElementById(gridId);
+            var start = ((currentPage - 1) * perPage) + 1;
+            var url = feedBase + "?alt=json&start-index=" + start + "&max-results=" + count;
+            if(label === "" && query !== "") { url += "&q=" + encodeURIComponent(query); }
+            fetch(url).then(r => r.json()).then(d => {
+                grid.innerHTML = "";
+                if(d.feed.entry) {
+                    d.feed.entry.forEach((post, index) => {
+                        var t = post.title.$t, link = post.link.find(l => l.rel === 'alternate').href;
+                        var isAdult = false;
+                        if(post.category) post.category.forEach(c => { if(c.term === "adult Movie And Series") isAdult = true; });
+                        var temp = document.createElement('div'); temp.innerHTML = post.content.$t;
+                        var img = temp.querySelector('img') ? temp.querySelector('img').src : "";
+                        
+                        var rating = "N/A", lang = "Unknown";
+                        var info = temp.querySelectorAll('.info-text div');
+                        info.forEach(div => {
+                            if(div.innerText.includes('Rating:')) rating = div.innerText.split('Rating:')[1].trim().split('/')[0];
+                            if(div.innerText.includes('Language:')) lang = div.innerText.split('Language:')[1].trim();
+                        });
+
+                        var card = document.createElement('div');
+                        card.className = "movie-card fade-in" + (isAdult ? " is-adult-post" : "");
+                        card.innerHTML = `<a href="${link}"><div class="poster-box"><div class="card-badge">${lang.split(' ')[0]}</div><div class="card-rating">⭐ ${rating}</div><img src="${img}"/></div><div class="movie-info"><div class="m-title">${t}</div><div class="m-meta">${lang}</div></div></a>`;
+                        grid.appendChild(card);
+                    });
+                }
+                if(isPagination) {
+                    var tp = Math.ceil(totalPosts / perPage);
+                    document.getElementById('page-info').innerText = "PAGE " + currentPage + " OF " + (tp || 1);
+                    document.getElementById('prevB').disabled = (currentPage <= 1);
+                    document.getElementById('nextB').disabled = (currentPage >= tp);
+                    window.scrollTo({top:0, behavior:'smooth'});
+                }
+            });
+          }
+
+          function doSearch() { var v = document.getElementById('searchInput').value; if(v) { window.location.href = "/search?q=" + encodeURIComponent(v); } }
+          window.onscroll = function() { var b = document.getElementById("backToTop"); if(document.body.scrollTop > 400 || document.documentElement.scrollTop > 400) b.style.display = "block"; else b.style.display = "none"; };
+          function scrollToTop() { window.scrollTo({top: 0, behavior: 'smooth'}); }
+          function changePage(d) { currentPage += d; init(); }
+          window.onload = init;
+        //]]></script>
+        
+        <button id='backToTop' onclick='scrollToTop()'><i class='fa fa-arrow-up'/></button>
+        <a class='telegram-float' href='https://t.me/TGLinkBase' target='_blank'><i class='fab fa-telegram-plane'/></a>
+
+      <b:else/>
+        <!-- POST VIEW (With Related Posts System) -->
+        <b:loop values='data:posts' var='post'>
+          <div style='max-width:900px; margin:0 auto; padding:15px; background:#111217; border-radius:12px; border: 1px solid #222;'>
+            <data:post.body/>
+            <div id='post-labels-hidden' style='display:none;'>
+               <b:loop values='data:post.labels' var='label'><data:label.name/>,</b:loop>
+            </div>
+            <div class='related-movies-box'>
+                <div class='related-title'><i class='fas fa-film'/> SIMILAR MOVIES</div>
+                <div id='related-grid' class='movie-grid'></div>
+            </div>
+            <script>//<![CDATA[
+              function loadRelated() {
+                var lb = document.getElementById('post-labels-hidden'); if(!lb) return;
+                var labels = lb.textContent.split(',').filter(l => l.trim() !== "");
+                if(labels.length > 0) {
+                    var targetLabel = labels[0].trim();
+                    fetch("/feeds/posts/default/-/" + encodeURIComponent(targetLabel) + "?alt=json&max-results=7").then(r => r.json()).then(d => {
+                        var grid = document.getElementById('related-grid'); grid.innerHTML = "";
+                        if(d.feed.entry) {
+                            d.feed.entry.forEach(entry => {
+                                var link = entry.link.find(l => l.rel === 'alternate').href;
+                                if(window.location.href.indexOf(link) === -1) {
+                                    var t = entry.title.$t, temp = document.createElement('div'); temp.innerHTML = entry.content.$t;
+                                    var img = temp.querySelector('img') ? temp.querySelector('img').src : "";
+                                    grid.innerHTML += `<div class="movie-card"><a href="${link}"><div class="poster-box"><img src="${img}"/></div><div class="movie-info"><div class="m-title">${t}</div></div></a></div>`;
+                                }
+                            });
+                        }
+                    });
+                }
+              }
+              setTimeout(loadRelated, 500);
+              checkAdultPreference();
+            //]]></script>
+          </div>
+        </b:loop>
+      </b:if>
+
+    </b:includable>
+  </b:widget>
+</b:section>
+</div>
+
+<!-- Footer Labels -->
+<div class='bottom-labels'>
+    <div class='main-wrapper'>
+        <h3 style='margin-bottom:20px;'>📁 All Categories</h3>
+        <div class='label-list'>
+            <b:section id='bottom-label-section' name='Label Cloud Bottom' showaddelement='yes'/>
+        </div>
+    </div>
+</div>
+
+<link href='https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css' rel='stylesheet'/>
+</body>
+</html>
