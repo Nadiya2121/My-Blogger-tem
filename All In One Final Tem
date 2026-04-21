@@ -58,6 +58,12 @@ a { text-decoration: none; color: inherit; }
 input:checked + .slider-toggle { background-color: var(--accent-red); }
 input:checked + .slider-toggle:before { transform: translateX(16px); }
 
+/* 🔥 ADULT BLUR CSS (STILL HERE & WORKING) 🔥 */
+.is-adult-post .poster-box img, .is-adult-post .trending-poster img, .is-adult-post .slide-item img { filter: blur(35px) !important; transition: 0.3s; }
+.is-adult-post .poster-box::before, .is-adult-post .trending-poster::before { content: '18+'; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(204, 0, 0, 0.95); color: #fff; padding: 4px 10px; border-radius: 4px; font-weight: 900; z-index: 5; font-size: 14px; border: 1px solid #fff; pointer-events: none; }
+body.adult-mode-on .is-adult-post img { filter: blur(0) !important; }
+body.adult-mode-on .is-adult-post::before { display: none !important; }
+
 /* RGB ANIMATION KEYFRAMES */
 @keyframes rgb-btn-glow {
     0% { border-color: #ff0000; box-shadow: 0 0 15px rgba(255, 0, 0, 0.6); }
@@ -327,7 +333,10 @@ input:checked + .slider-toggle:before { transform: translateX(16px); }
                 data.feed.entry.forEach(post => {
                     var link = post.link.find(l => l.rel === 'alternate').href;
                     var isAdult = false;
-                    if(post.category) post.category.forEach(c => { if(c.term === "adult Movie And Series") isAdult = true; });
+                    if(post.category) post.category.forEach(c => { 
+                        var ct = c.term.toLowerCase();
+                        if(ct === "adult movie and series" || ct === "18+" || ct === "18 plus" || ct === "adult") isAdult = true; 
+                    });
                     var temp = document.createElement('div'); temp.innerHTML = post.content.$t;
                     var backdrop = "https://via.placeholder.com/1000x400?text=Poster";
                     var imgs = temp.querySelectorAll('img');
@@ -352,7 +361,10 @@ input:checked + .slider-toggle:before { transform: translateX(16px); }
                     data.feed.entry.forEach((post) => {
                         var t = post.title.$t, link = post.link.find(l => l.rel === 'alternate').href;
                         var isAdult = false;
-                        if(post.category) post.category.forEach(c => { if(c.term === "adult Movie And Series") isAdult = true; });
+                        if(post.category) post.category.forEach(c => { 
+                            var ct = c.term.toLowerCase();
+                            if(ct === "adult movie and series" || ct === "18+" || ct === "18 plus" || ct === "adult") isAdult = true; 
+                        });
                         var temp = document.createElement('div'); temp.innerHTML = post.content.$t;
                         var img = temp.querySelector('img') ? temp.querySelector('img').src : "";
                         html += `<div class="trending-item ${isAdult ? 'is-adult-post' : ''}"><a href="${link}"><div class="trending-poster"><img src="${img}" loading="lazy"/><div class="play-overlay"><i class="fas fa-play-circle"></i></div></div><span class="trending-title">${t}</span></a></div>`;
@@ -386,8 +398,18 @@ input:checked + .slider-toggle:before { transform: translateX(16px); }
                 if(d.feed.entry) {
                     d.feed.entry.forEach((post) => {
                         var t = post.title.$t, link = post.link.find(l => l.rel === 'alternate').href;
+                        
+                        // 🔥 SMART 18+ DETECTION 🔥
                         var isAdult = false;
-                        if(post.category) post.category.forEach(c => { if(c.term === "adult Movie And Series") isAdult = true; });
+                        if(post.category) {
+                            post.category.forEach(c => { 
+                                var ct = c.term.toLowerCase();
+                                if(ct === "adult movie and series" || ct === "18+" || ct === "18 plus" || ct === "adult") {
+                                    isAdult = true; 
+                                }
+                            });
+                        }
+                        
                         var temp = document.createElement('div'); temp.innerHTML = post.content.$t;
                         var img = temp.querySelector('img') ? temp.querySelector('img').src : "";
                         var rating = "N/A", lang = "Unknown";
