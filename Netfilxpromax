@@ -1,0 +1,2857 @@
+import os
+import asyncio
+import datetime
+import uvicorn
+import time
+import aiohttp
+import hmac
+import hashlib
+import urllib.parse
+import secrets
+import json
+import copy
+
+try:
+    asyncio.get_running_loop()
+except RuntimeError:
+    asyncio.set_event_loop(asyncio.new_event_loop())
+
+from fastapi import FastAPI, Body, Request, Depends, HTTPException, status
+from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import Command, StateFilter
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import StatesGroup, State
+from aiogram.fsm.storage.memory import MemoryStorage
+
+from motor.motor_asyncio import AsyncIOMotorClient
+from bson import ObjectId
+from pydantic import BaseModel
+from typing import Optional
+
+# ==========================================
+# 1. Configuration & Global Variables
+# ==========================================
+TOKEN = os.getenv("BOT_TOKEN")
+MONGO_URL = os.getenv("MONGO_URI")
+OWNER_ID = int(os.getenv("ADMIN_ID", "0"))
+APP_URL = os.getenv("APP_URL")
+
+# --- CHANNELS SETUP ---
+CHANNEL_ID = os.getenv("CHANNEL_ID", "") 
+DUMP_CHANNEL_ID = os.getenv("DUMP_CHANNEL_ID", "") 
+
+ADMIN_PASS = os.getenv("ADMIN_PASS", "admin123") 
+BOT_USERNAME = "NetfilxProMaxbot"
+TMDB_API_KEY = os.getenv("TMDB_API_KEY", "") 
+
+bot = Bot(token=TOKEN)
+dp = Dispatcher(storage=MemoryStorage())
+app = FastAPI()
+security = HTTPBasic()
+
+app.add_middleware(
+    CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"]
+)
+
+client = AsyncIOMotorClient(MONGO_URL)
+db = client['movie_database']
+
+admin_cache = set([OWNER_ID]) 
+banned_cache = set() 
+
+# --- MEMORY CACHE & RATE LIMITING ---
+CACHE_DATA = {
+    "trending": {"time": 0, "data": []},
+    "list": {}
+}
+USER_REQUEST_RATES = {}
+CACHE_TTL = 120 # 2 minutes cache
+# -------------------------------------------------
+
+TMDB_GENRES = {28: "Action", 12: "Adventure", 16: "Animation", 35: "Comedy", 80: "Crime", 99: "Documentary", 18: "Drama", 10751: "Family", 14: "Fantasy", 36: "History", 27: "Horror", 10402: "Music", 9648: "Mystery", 10749: "Romance", 878: "Sci-Fi", 10770: "TV Movie", 53: "Thriller", 10752: "War", 37: "Western", 10759: "Action", 10765: "Sci-Fi"}
+
+class AdminStates(StatesGroup):
+    waiting_for_bcast = State()
+    waiting_for_reply = State()
+    waiting_for_photo = State()
+    waiting_for_title = State()
+    waiting_for_quality = State() 
+    waiting_for_upc_photo = State()
+    waiting_for_upc_title = State()
+
+class AdvancedUpload(StatesGroup):
+    waiting_for_tmdb_query = State()
+    waiting_for_manual_photo = State()
+    waiting_for_manual_title = State()
+    waiting_for_language = State() 
+    waiting_for_custom_language = State() 
+    selecting_qualities = State()
+    waiting_for_custom_quality = State()
+    waiting_for_files = State()
+
+async def load_admins():
+    admin_cache.clear()
+    admin_cache.add(OWNER_ID)
+    async for admin in db.admins.find():
+        admin_cache.add(admin["user_id"])
+
+async def load_banned_users():
+    banned_cache.clear()
+    async for b_user in db.banned.find():
+        banned_cache.add(b_user["user_id"])
+
+async def init_db():
+    await db.movies.create_index([("title", "text")])
+    await db.movies.create_index("title")
+    await db.movies.create_index("genres") 
+    await db.movies.create_index("created_at")
+    await db.auto_delete.create_index("delete_at")
+    await db.users.create_index("joined_at")
+    await db.users.create_index("user_id") 
+    await db.reviews.create_index("movie_title")
+    await db.reviews.create_index("user_id") 
+    await db.payments.create_index("trx_id", unique=True)
+    await db.requests.create_index("movie") 
+    await db.user_unlocks.create_index("user_id")
+
+def validate_tg_data(init_data: str) -> bool:
+    try:
+        parsed_data = dict(urllib.parse.parse_qsl(init_data))
+        hash_val = parsed_data.pop('hash', None)
+        auth_date = int(parsed_data.get('auth_date', 0))
+        if not hash_val or time.time() - auth_date > 86400: return False
+        data_check_string = "\n".join(f"{k}={v}" for k, v in sorted(parsed_data.items()))
+        secret_key = hmac.new(b"WebAppData", TOKEN.encode(), hashlib.sha256).digest()
+        calculated_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
+        return calculated_hash == hash_val
+    except Exception: return False
+
+def verify_admin(credentials: HTTPBasicCredentials = Depends(security)):
+    correct_username = secrets.compare_digest(credentials.username, "admin")
+    correct_password = secrets.compare_digest(credentials.password, ADMIN_PASS)
+    if not (correct_username and correct_password):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect username or password", headers={"WWW-Authenticate": "Basic"})
+    return True
+
+async def auto_delete_worker():
+    while True:
+        try:
+            now = datetime.datetime.utcnow()
+            expired_msgs = db.auto_delete.find({"delete_at": {"$lte": now}})
+            async for msg in expired_msgs:
+                try: await bot.delete_message(chat_id=msg["chat_id"], message_id=msg["message_id"])
+                except Exception: pass
+                await db.auto_delete.delete_one({"_id": msg["_id"]})
+        except Exception: pass
+        await asyncio.sleep(60)
+
+async def upload_to_telegraph(file_id: str) -> str:
+    try:
+        file_info = await bot.get_file(file_id)
+        file_path = file_info.file_path
+        url = f"https://api.telegram.org/file/bot{TOKEN}/{file_path}"
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                if resp.status == 200:
+                    image_data = await resp.read()
+                    form = aiohttp.FormData()
+                    form.add_field('file', image_data, filename='image.jpg', content_type='image/jpeg')
+                    
+                    async with session.post('https://telegra.ph/upload', data=form) as tele_resp:
+                        if tele_resp.status == 200:
+                            tele_data = await tele_resp.json()
+                            if isinstance(tele_data, list) and 'src' in tele_data[0]:
+                                return f"https://telegra.ph{tele_data[0]['src']}"
+    except Exception as e:
+        pass
+    return None
+
+# ==========================================
+# Telegram Bot Commands
+# ==========================================
+@dp.message(Command("start"))
+async def start_cmd(message: types.Message, state: FSMContext):
+    uid = message.from_user.id
+    if uid in banned_cache: 
+        return await message.answer("🚫 <b>আপনাকে এই বট থেকে স্থায়ীভাবে ব্যান করা হয়েছে।</b>", parse_mode="HTML")
+        
+    await state.clear()
+    now = datetime.datetime.utcnow()
+    
+    user = await db.users.find_one({"user_id": uid})
+    if not user:
+        args = message.text.split(" ")
+        if len(args) > 1 and args[1].startswith("ref_"):
+            try:
+                referrer_id = int(args[1].split("_")[1])
+                if referrer_id != uid:
+                    await db.users.update_one({"user_id": referrer_id}, {"$inc": {"refer_count": 1}})
+                    ref_user = await db.users.find_one({"user_id": referrer_id})
+                    
+                    # 1 Referral = 1 Day VIP Logic
+                    if ref_user and ref_user.get("refer_count", 0) % 1 == 0:
+                        current_vip = max(ref_user.get("vip_until", now), now)
+                        await db.users.update_one({"user_id": referrer_id}, {"$set": {"vip_until": current_vip + datetime.timedelta(days=1)}})
+                        try: await bot.send_message(referrer_id, "🎉 <b>অভিনন্দন!</b> আপনার রেফার লিংকে ১ জন জয়েন করেছে। আপনাকে ২৪ ঘণ্টার জন্য <b>VIP</b> দেওয়া হয়েছে!", parse_mode="HTML")
+                        except: pass
+            except Exception: pass
+
+        await db.users.insert_one({
+            "user_id": uid, "first_name": message.from_user.first_name, "joined_at": now,
+            "refer_count": 0, "coins": 0, "streak": 0, "last_checkin": now - datetime.timedelta(days=2), "last_quiz": now - datetime.timedelta(days=2), "vip_until": now - datetime.timedelta(days=1)
+        })
+    else:
+        await db.users.update_one({"user_id": uid}, {"$set": {"first_name": message.from_user.first_name}})
+    
+    if uid in admin_cache:
+        kb = [[types.InlineKeyboardButton(text="🎬 Watch Now (ওপেন অ্যাপ)", web_app=types.WebAppInfo(url=APP_URL))]]
+        markup = types.InlineKeyboardMarkup(inline_keyboard=kb)
+        
+        text = (
+            "👋 <b>হ্যালো অ্যাডমিন!</b>\n\n"
+            "⚙️ <b>কমান্ড:</b>\n"
+            "🔸 <b>স্মার্ট আপলোড (TMDB):</b> <code>/addmovie</code> 🔥\n"
+            "🔸 প্যানেল: <code>/addadmin ID</code> | <code>/deladmin ID</code> | <code>/adminlist</code>\n"
+            "🔸 ডাইরেক্ট লিংক: <code>/addlink লিংক</code> | <code>/dellink লিংক</code> | <code>/seelinks</code>\n"
+            "🔸 ভাসমান লিংক: <code>/settg লিংক</code> | <code>/set18 লিংক</code>\n"
+            "🔸 পেমেন্ট নাম্বার সেট: <code>/setbkash নাম্বার</code> | <code>/setnagad নাম্বার</code>\n"
+            "🔸 প্রোটেকশন: <code>/protect on</code> বা <code>/protect off</code>\n"
+            "🔸 অটো-ডিলিট টাইম: <code>/settime [মিনিট]</code>\n"
+            "🔸 স্ট্যাটাস: <code>/stats</code> | ব্রডকাস্ট: <code>/cast</code>\n"
+            "🔸 মুভি ডিলিট: <code>/delmovie মুভির নাম</code>\n"
+            "🔸 ব্যান: <code>/ban ID</code> | আনব্যান: <code>/unban ID</code>\n"
+            "🔸 VIP দিন: <code>/addvip ID দিন</code> | VIP বাতিল: <code>/removevip ID</code>\n\n"
+            f"🌐 <b>ওয়েব অ্যাডমিন প্যানেল:</b> <a href='{APP_URL}/admin'>এখানে ক্লিক করুন</a>\n"
+            "<i>লগিন: admin / admin123</i>\n\n"
+            "📥 <b>কুইক আপলোড: মুভি অ্যাড করতে সরাসরি ভিডিও বা ফাইল পাঠান।</b>"
+        )
+        await message.answer(text, reply_markup=markup, parse_mode="HTML", disable_web_page_preview=True)
+    else: 
+        TUTORIAL_VIDEO_LINK = "https://t.me/HowtoDowlnoad/41" 
+        WELCOME_IMAGE_URL = "https://files.catbox.moe/micrnz.jpg"
+        
+        kb = [
+            [types.InlineKeyboardButton(text="🎬 Watch Now (অ্যাপ ওপেন করুন)", web_app=types.WebAppInfo(url=APP_URL))],
+            [types.InlineKeyboardButton(text="📖 কিভাবে মুভি দেখবেন? (Tutorial)", url=TUTORIAL_VIDEO_LINK)]
+        ]
+        markup = types.InlineKeyboardMarkup(inline_keyboard=kb)
+        
+        caption = (
+            f"👋 <b>স্বাগতম {message.from_user.first_name}!</b>\n\n"
+            "<b>👇 কিভাবে এই বটটি ব্যবহার করবেন?</b>\n\n"
+            "🔸 <b>ধাপ ১:</b> নিচের <b>'🎬 Watch Now'</b> বাটনে ক্লিক করুন।\n"
+            "🔸 <b>ধাপ ২:</b> অ্যাপ থেকে আপনার পছন্দের মুভিটি সার্চ বা সিলেক্ট করুন।\n"
+            "🔸 <b>ধাপ ৩:</b> মুভির কোয়ালিটি সিলেক্ট করে Download বাটনে ক্লিক করুন।\n"
+            "🔸 <b>ধাপ ৪:</b> ১০ সেকেন্ডের এড দেখে আনলক করলেই মুভি সরাসরি আপনার ইনবক্সে চলে আসবে!\n\n"
+            "💡 <i>বিস্তারিত বুঝতে নিচের <b>'কিভাবে মুভি দেখবেন?'</b> বাটনে ক্লিক করে ভিডিওটি দেখে নিন।</i>"
+        )
+        
+        try:
+            await message.answer_photo(photo=WELCOME_IMAGE_URL, caption=caption, reply_markup=markup, parse_mode="HTML")
+        except Exception:
+            await message.answer(caption, reply_markup=markup, parse_mode="HTML", disable_web_page_preview=True)
+
+@dp.message(lambda m: m.chat.type == "private" and m.from_user.id not in admin_cache)
+async def forward_to_admin(m: types.Message):
+    try:
+        builder = InlineKeyboardBuilder()
+        builder.button(text="✍️ রিপ্লাই দিন", callback_data=f"reply_{m.from_user.id}")
+        for ad_id in admin_cache:
+            try: await bot.send_message(ad_id, f"📩 <b>New Message from <a href='tg://user?id={m.from_user.id}'>{m.from_user.first_name}</a></b>:\n\n{m.text or 'Media file'}", parse_mode="HTML", reply_markup=builder.as_markup())
+            except Exception: pass
+    except Exception: pass
+
+# ==========================================
+# Smart Batch Uploading, TMDB & Language Logic
+# ==========================================
+def get_language_keyboard():
+    builder = InlineKeyboardBuilder()
+    langs = ["🇧🇩 Bangla", "🇮🇳 Hindi", "🇺🇸 English", "🎙 Bangla Dubbed", "🎙 Hindi Dubbed", "✍️ Custom"]
+    for l in langs:
+        builder.button(text=l, callback_data=f"lang_{l}")
+    builder.adjust(2)
+    return builder.as_markup()
+
+def get_batch_keyboard(selected_list: list):
+    builder = InlineKeyboardBuilder()
+    options = ["480p", "720p", "1080p", "4K", "Dual Audio", "Ep 01", "Ep 02", "Ep 03", "Ep 04", "Ep 05", "Ep 06", "Ep 07", "Ep 08", "Ep 09", "Ep 10", "✍️ Custom"]
+    for opt in options:
+        mark = "✅ " if opt in selected_list else ""
+        builder.button(text=f"{mark}{opt}", callback_data=f"bup_{opt}")
+    builder.button(text="✅ ডান (Done)", callback_data="bup_DONE")
+    builder.adjust(3)
+    return builder.as_markup()
+
+@dp.message(Command("addmovie"))
+async def start_advanced_upload(m: types.Message, state: FSMContext):
+    if m.from_user.id not in admin_cache: return
+    await state.clear()
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🌐 TMDB থেকে (অটো)", callback_data="up_tmdb")
+    builder.button(text="📁 Manual (ম্যানুয়াল)", callback_data="up_manual")
+    await m.answer("🎬 <b>আপনি কিভাবে মুভি আপলোড করতে চান?</b>\nTMDB দিয়ে আপলোড করলে পোস্টার ও ক্যাটা জরিমানা অটোমেটিক বসবে।", reply_markup=builder.as_markup(), parse_mode="HTML")
+
+@dp.callback_query(F.data.startswith("up_"))
+async def choose_upload_method(c: types.CallbackQuery, state: FSMContext):
+    if c.from_user.id not in admin_cache: return
+    await c.answer()
+    method = c.data.split("_")[1]
+    if method == "tmdb":
+        if not TMDB_API_KEY:
+            return await c.answer("⚠️ TMDB API Key কনফিগার করা নেই! Manual আপলোড ব্যবহার করুন।", show_alert=True)
+        await state.set_state(AdvancedUpload.waiting_for_tmdb_query)
+        await c.message.edit_text("🔍 <b>মুভি বা সিরিজের নাম লিখে পাঠান:</b>\n<i>(যেকোনো ভাষায়)</i>", parse_mode="HTML")
+    else:
+        await state.set_state(AdvancedUpload.waiting_for_manual_photo)
+        await c.message.edit_text("🖼 <b>প্রথমে মুভির একটি সুন্দর পোস্টার (Photo) সেন্ড করুন:</b>", parse_mode="HTML")
+
+@dp.message(AdvancedUpload.waiting_for_tmdb_query)
+async def process_tmdb_query(m: types.Message, state: FSMContext):
+    query = m.text.strip()
+    url = f"https://api.tmdb.org/3/search/multi?api_key={TMDB_API_KEY}&query={urllib.parse.quote(query)}"
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                results = data.get("results", [])
+                if not results: return await m.answer("⚠️ TMDB তে কিছু পাওয়া যায়নি! অন্য নাম দিয়ে ট্রাই করুন।")
+                
+                builder = InlineKeyboardBuilder()
+                for res in results[:5]:
+                    title = res.get("title") or res.get("name")
+                    if not title: continue
+                    year = res.get("release_date", res.get("first_air_date", ""))[:4]
+                    builder.button(text=f"{title} ({year})", callback_data=f"tmdbid_{res['id']}_{res['media_type']}")
+                builder.adjust(1)
+                await m.answer("👇 <b>সঠিক মুভিটি সিলেক্ট করুন:</b>", reply_markup=builder.as_markup(), parse_mode="HTML")
+            else: await m.answer("⚠️ TMDB সার্ভারে সমস্যা হচ্ছে!")
+
+@dp.callback_query(F.data.startswith("tmdbid_"))
+async def process_tmdb_selection(c: types.CallbackQuery, state: FSMContext):
+    if c.from_user.id not in admin_cache: return
+    await c.answer()
+    _, tmdb_id, media_type = c.data.split("_")
+    await c.message.edit_text("⏳ ডাটা লোড হচ্ছে...")
+    
+    url = f"https://api.tmdb.org/3/{media_type}/{tmdb_id}?api_key={TMDB_API_KEY}"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            if resp.status == 200:
+                res = await resp.json()
+                title = res.get("title") or res.get("name")
+                
+                release_date = res.get("release_date") or res.get("first_air_date") or ""
+                year = release_date[:4] if release_date else ""
+                if year:
+                    title = f"{title} ({year})"
+                
+                poster_path = res.get("poster_path")
+                genres = [g["name"] for g in res.get("genres", [])]
+                
+                if not poster_path:
+                    return await c.message.edit_text("⚠️ এই মুভির কোনো পোস্টার নেই! ম্যানুয়াল আপলোড ব্যবহার করুন।")
+                
+                poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}"
+                try:
+                    await bot.send_photo(chat_id=c.from_user.id, photo=poster_url, caption=f"✅ <b>{title}</b>\nক্যাটাগরি: {', '.join(genres)}")
+                    await state.update_data(title=title, photo_id=poster_url, genres=genres)
+                    await state.set_state(AdvancedUpload.waiting_for_language)
+                    await c.message.answer("🗣 <b>এই মুভিটির ভাষা (Language) সিলেক্ট করুন:</b>", reply_markup=get_language_keyboard(), parse_mode="HTML")
+                except Exception as e:
+                    await c.message.answer("⚠️ পোস্টার ডাউনলোড করতে সমস্যা হচ্ছে। ম্যানুয়াল আপলোড ব্যবহার করুন।")
+
+@dp.message(AdvancedUpload.waiting_for_manual_photo, F.photo)
+async def process_manual_photo(m: types.Message, state: FSMContext):
+    msg = await m.answer("⏳ <i>পোস্টারটি পারমানেন্ট সার্ভারে আপলোড হচ্ছে...</i>", parse_mode="HTML")
+    file_id = m.photo[-1].file_id
+    
+    img_url = await upload_to_telegraph(file_id)
+    if not img_url:
+        img_url = file_id 
+        
+    await state.update_data(photo_id=img_url)
+    await state.set_state(AdvancedUpload.waiting_for_manual_title)
+    await msg.edit_text("✅ পোস্টার সেভ হয়েছে! এবার <b>মুভির নাম</b> লিখে পাঠান:", parse_mode="HTML")
+
+@dp.message(AdvancedUpload.waiting_for_manual_title, F.text)
+async def process_manual_title(m: types.Message, state: FSMContext):
+    await state.update_data(title=m.text.strip(), genres=["All"])
+    await state.set_state(AdvancedUpload.waiting_for_language)
+    await m.answer("🗣 <b>এই মুভিটির ভাষা (Language) সিলেক্ট করুন:</b>", reply_markup=get_language_keyboard(), parse_mode="HTML")
+
+@dp.callback_query(AdvancedUpload.waiting_for_language, F.data.startswith("lang_"))
+async def process_language_selection(c: types.CallbackQuery, state: FSMContext):
+    if c.from_user.id not in admin_cache: return
+    await c.answer()
+    lang = c.data.replace("lang_", "")
+    
+    if lang == "✍️ Custom":
+        await state.set_state(AdvancedUpload.waiting_for_custom_language)
+        await c.message.edit_text("✍️ <b>আপনার কাস্টম ভাষার নাম লিখে পাঠান:</b>\n(যেমন: Korean, Tamil Dubbed)", parse_mode="HTML")
+    else:
+        clean_lang = lang.replace("🇧🇩 ", "").replace("🇮🇳 ", "").replace("🇺🇸 ", "").replace("🎙 ", "")
+        await state.update_data(language=clean_lang, selected_qualities=[])
+        await state.set_state(AdvancedUpload.selecting_qualities)
+        await c.message.edit_text(f"✅ ভাষা সিলেক্ট হয়েছে: <b>{clean_lang}</b>\n\n👇 <b>যে যে কোয়ালিটি আপলোড করবেন সেগুলো সিলেক্ট করে '✅ ডান' বাটনে ক্লিক করুন:</b>", reply_markup=get_batch_keyboard([]), parse_mode="HTML")
+
+@dp.message(AdvancedUpload.waiting_for_custom_language, F.text)
+async def process_custom_language(m: types.Message, state: FSMContext):
+    clean_lang = m.text.strip()
+    await state.update_data(language=clean_lang, selected_qualities=[])
+    await state.set_state(AdvancedUpload.selecting_qualities)
+    await m.answer(f"✅ ভাষা সিলেক্ট হয়েছে: <b>{clean_lang}</b>\n\n👇 <b>যে যে কোয়ালিটি আপলোড করবেন সেগুলো সিলেক্ট করে '✅ ডান' বাটনে ক্লিক করুন:</b>", reply_markup=get_batch_keyboard([]), parse_mode="HTML")
+
+@dp.callback_query(AdvancedUpload.selecting_qualities, F.data.startswith("bup_"))
+async def process_quality_selection(c: types.CallbackQuery, state: FSMContext):
+    if c.from_user.id not in admin_cache: return
+    await c.answer()
+    action = c.data[4:]
+    data = await state.get_data()
+    selected = data.get("selected_qualities", [])
+    
+    if action == "DONE":
+        if not selected: return await c.answer("⚠️ অন্তত একটি কোয়ালিটি সিলেক্ট করুন!", show_alert=True)
+        await state.update_data(current_index=0)
+        await state.set_state(AdvancedUpload.waiting_for_files)
+        await c.message.edit_text(f"✅ <b>ডান!</b>\n\nআপনি <b>{len(selected)}</b> টি ফাইল সিলেক্ট করেছেন।\n\n👉 দয়া করে <b>{selected[0]}</b> এর ভিডিও/ফাইলটি সেন্ড করুন:", parse_mode="HTML")
+    elif action == "✍️ Custom":
+        await state.set_state(AdvancedUpload.waiting_for_custom_quality)
+        await c.message.answer("✍️ <b>আপনার কাস্টম কোয়ালিটি বা এপিসোডের নাম লিখে পাঠান:</b>\n(যেমন: 480p HEVC বা Season 2 Ep 01)", parse_mode="HTML")
+    else:
+        if action in selected: selected.remove(action)
+        else: selected.append(action)
+        await state.update_data(selected_qualities=selected)
+        await c.message.edit_reply_markup(reply_markup=get_batch_keyboard(selected))
+
+@dp.message(AdvancedUpload.waiting_for_custom_quality, F.text)
+async def process_custom_quality(m: types.Message, state: FSMContext):
+    data = await state.get_data()
+    selected = data.get("selected_qualities", [])
+    selected.append(m.text.strip())
+    await state.update_data(selected_qualities=selected)
+    await state.set_state(AdvancedUpload.selecting_qualities)
+    await m.answer("✅ যোগ করা হয়েছে! আরও লাগলে সিলেক্ট করুন, নয়তো <b>ডান</b> দিন:", reply_markup=get_batch_keyboard(selected), parse_mode="HTML")
+
+@dp.message(AdvancedUpload.waiting_for_files, F.video | F.document)
+async def process_batch_file(m: types.Message, state: FSMContext):
+    if m.from_user.id not in admin_cache: return
+    try:
+        data = await state.get_data()
+        selected = data.get("selected_qualities", [])
+        idx = data.get("current_index", 0)
+        
+        if not selected or idx >= len(selected): return 
+        
+        current_quality = selected[idx]
+        title = data.get("title", "Unknown")
+        photo_id = data.get("photo_id")
+        genres = data.get("genres", ["All"])
+        language = data.get("language", "Not Specified") 
+        file_id = m.video.file_id if m.video else m.document.file_id
+        
+        await db.movies.insert_one({
+            "title": title, "quality": current_quality, "photo_id": photo_id, 
+            "file_id": file_id, 
+            "file_type": "video" if m.video else "document",
+            "genres": genres,
+            "movie_lang": language, 
+            "clicks": 0, "created_at": datetime.datetime.utcnow()
+        })
+        
+        CACHE_DATA["list"].clear()
+        CACHE_DATA["trending"]["time"] = 0
+
+        if DUMP_CHANNEL_ID:
+            try:
+                dump_caption = f"#BACKUP\n🎬 <b>Title:</b> {title}\n🏷 <b>Quality:</b> {current_quality}\n🗣 <b>Language:</b> {language}"
+                if m.video:
+                    await bot.send_video(chat_id=DUMP_CHANNEL_ID, video=file_id, caption=dump_caption, parse_mode="HTML")
+                else:
+                    await bot.send_document(chat_id=DUMP_CHANNEL_ID, document=file_id, caption=dump_caption, parse_mode="HTML")
+            except Exception: pass
+        
+        next_idx = idx + 1
+        if next_idx < len(selected):
+            await state.update_data(current_index=next_idx)
+            await m.answer(f"✅ <b>{current_quality}</b> ফাইলটি সেভ হয়েছে!\n\n👉 এবার <b>{selected[next_idx]}</b> এর ভিডিও/ফাইলটি সেন্ড করুন:", parse_mode="HTML")
+        else:
+            await state.clear()
+            await m.answer(f"🎉 <b>{title}</b> এর সব ফাইল সফলভাবে আপলোড এবং অ্যাপে পাবলিশ করা হয়েছে!", parse_mode="HTML")
+            
+            if CHANNEL_ID and CHANNEL_ID != "-100XXXXXXXXXX":
+                try:
+                    old_post = await db.channel_posts.find_one({"title": title})
+                    if old_post:
+                        try: await bot.delete_message(chat_id=CHANNEL_ID, message_id=old_post["message_id"])
+                        except Exception: pass
+                    
+                    bot_info = await bot.get_me()
+                    kb = [[types.InlineKeyboardButton(text="🎬 মুভিটি ডাউনলোড করুন", url=f"https://t.me/{bot_info.username}?start=new")]]
+                    caption = f"🎬 <b>নতুন মুভি যুক্ত হয়েছে!</b>\n\n📌 <b>নাম:</b> {title}\n🏷 <b>ক্যাটাগরি:</b> {', '.join(genres)}\n🗣 <b>ভাষা:</b> {language}\n\n👇 <i>ডাউনলোড করতে নিচের বাটনে ক্লিক করুন।</i>"
+                    
+                    if photo_id.startswith("http"):
+                        sent_msg = await bot.send_photo(chat_id=CHANNEL_ID, photo=photo_id, caption=caption, parse_mode="HTML", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb))
+                    else:
+                        sent_msg = await bot.send_photo(chat_id=CHANNEL_ID, photo=photo_id, caption=caption, parse_mode="HTML", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb))
+                    
+                    await db.channel_posts.update_one({"title": title}, {"$set": {"message_id": sent_msg.message_id}}, upsert=True)
+                except Exception: pass
+    except Exception as e:
+        await m.answer(f"⚠️ ফাইল সেভ করতে সমস্যা হয়েছে: {e}")
+
+@dp.message(AdvancedUpload.waiting_for_files)
+async def warning_not_file(m: types.Message):
+    await m.answer("⚠️ অনুগ্রহ করে সঠিক ভিডিও বা ডকুমেন্ট ফাইল সেন্ড করুন।")
+
+# ==========================================
+# Admin Settings & VIP 
+# ==========================================
+def format_views(n):
+    if n >= 1000000: return f"{n/1000000:.1f}M".replace(".0M", "M")
+    if n >= 1000: return f"{n/1000:.1f}K".replace(".0K", "K")
+    return str(n)
+
+@dp.message(Command("addlink"))
+async def add_direct_link(m: types.Message):
+    if m.from_user.id not in admin_cache: return
+    try:
+        url = m.text.split(" ", 1)[1].strip()
+        await db.settings.update_one({"id": "direct_links"}, {"$addToSet": {"links": url}}, upsert=True)
+        await m.answer(f"✅ ডাইরেক্ট লিংক সফলভাবে অ্যাড করা হয়েছে:\n<code>{url}</code>", parse_mode="HTML")
+    except Exception: await m.answer("⚠️ সঠিক নিয়ম: <code>/addlink https://example.com</code>", parse_mode="HTML")
+
+@dp.message(Command("dellink"))
+async def del_direct_link(m: types.Message):
+    if m.from_user.id not in admin_cache: return
+    try:
+        url = m.text.split(" ", 1)[1].strip()
+        result = await db.settings.update_one({"id": "direct_links"}, {"$pull": {"links": url}})
+        if result.modified_count > 0: await m.answer(f"❌ লিংকটি ডিলিট করা হয়েছে:\n<code>{url}</code>", parse_mode="HTML")
+        else: await m.answer("⚠️ লিংকটি ডাটাবেসে পাওয়া যায়নি।")
+    except Exception: await m.answer("⚠️ সঠিক নিয়ম: <code>/dellink https://example.com</code>", parse_mode="HTML")
+
+@dp.message(Command("seelinks"))
+async def see_direct_links(m: types.Message):
+    if m.from_user.id not in admin_cache: return
+    dl_cfg = await db.settings.find_one({"id": "direct_links"})
+    links = dl_cfg.get("links", []) if dl_cfg else []
+    if not links: return await m.answer("⚠️ কোনো ডাইরেক্ট লিংক অ্যাড করা নেই।")
+    text = "🔗 <b>বর্তমান ডাইরেক্ট লিংক সমূহ:</b>\n\n"
+    for i, link in enumerate(links, 1): text += f"{i}. <code>{link}</code>\n"
+    await m.answer(text, parse_mode="HTML", disable_web_page_preview=True)
+
+@dp.message(Command("settg"))
+async def set_tg_link(m: types.Message):
+    if m.from_user.id not in admin_cache: return
+    try:
+        url = m.text.split(" ")[1]
+        await db.settings.update_one({"id": "link_tg"}, {"$set": {"url": url}}, upsert=True)
+        await m.answer(f"✅ Telegram লিংক সেট করা হয়েছে:\n<code>{url}</code>", parse_mode="HTML")
+    except Exception: await m.answer("⚠️ সঠিক নিয়ম: <code>/settg https://t.me/yourchannel</code>", parse_mode="HTML")
+
+@dp.message(Command("set18"))
+async def set_18_link(m: types.Message):
+    if m.from_user.id not in admin_cache: return
+    try:
+        url = m.text.split(" ")[1]
+        await db.settings.update_one({"id": "link_18"}, {"$set": {"url": url}}, upsert=True)
+        await m.answer(f"✅ 18+ লিংক সেট করা হয়েছে:\n<code>{url}</code>", parse_mode="HTML")
+    except Exception: await m.answer("⚠️ সঠিক নিয়ম: <code>/set18 https://t.me/your18channel</code>", parse_mode="HTML")
+
+@dp.message(Command("addadmin"))
+async def add_admin_cmd(m: types.Message):
+    if m.from_user.id != OWNER_ID: return await m.answer("⚠️ শুধুমাত্র মেইন Owner অ্যাডমিন অ্যাড করতে পারবে!")
+    try:
+        target_uid = int(m.text.split()[1])
+        await db.admins.update_one({"user_id": target_uid}, {"$set": {"user_id": target_uid}}, upsert=True)
+        admin_cache.add(target_uid)
+        await m.answer(f"✅ ইউজার <code>{target_uid}</code> কে অ্যাডমিন বানানো হয়েছে!", parse_mode="HTML")
+    except Exception: await m.answer("⚠️ সঠিক নিয়ম: <code>/addadmin ইউজার_আইডি</code>", parse_mode="HTML")
+
+@dp.message(Command("deladmin"))
+async def del_admin_cmd(m: types.Message):
+    if m.from_user.id != OWNER_ID: return await m.answer("⚠️ শুধুমাত্র মেইন Owner অ্যাডমিন রিমুভ করতে পারবে!")
+    try:
+        target_uid = int(m.text.split()[1])
+        if target_uid == OWNER_ID: return await m.answer("⚠️ Main Owner কে ডিলিট করা সম্ভব নয়!")
+        await db.admins.delete_one({"user_id": target_uid})
+        admin_cache.discard(target_uid)
+        await m.answer(f"❌ ইউজার <code>{target_uid}</code> কে রিমুভ করা হয়েছে!", parse_mode="HTML")
+    except Exception: await m.answer("⚠️ সঠিক নিয়ম: <code>/deladmin ইউজার_আইডি</code>", parse_mode="HTML")
+
+@dp.message(Command("adminlist"))
+async def list_admin_cmd(m: types.Message):
+    if m.from_user.id not in admin_cache: return
+    text = f"👑 <b>মেইন Owner:</b>\n▪️ <code>{OWNER_ID}</code>\n\n👮‍♂️ <b>অন্যান্য অ্যাডমিনগণ:</b>\n"
+    async for a in db.admins.find(): text += f"▪️ <code>{a['user_id']}</code>\n"
+    await m.answer(text, parse_mode="HTML")
+
+@dp.message(Command("delmovie"))
+async def del_movie_cmd(m: types.Message):
+    if m.from_user.id not in admin_cache: return
+    try:
+        title = m.text.split(" ", 1)[1].strip()
+        result = await db.movies.delete_many({"title": title})
+        
+        CACHE_DATA["list"].clear()
+        CACHE_DATA["trending"]["time"] = 0
+        
+        if result.deleted_count > 0: await m.answer(f"✅ '<b>{title}</b>' নামের {result.deleted_count} টি ফাইল ডিলিট হয়েছে!", parse_mode="HTML")
+        else: await m.answer("⚠️ এই নামের কোনো মুভি পাওয়া যায়নি।")
+    except Exception: await m.answer("⚠️ সঠিক নিয়ম: <code>/delmovie মুভির নাম</code>", parse_mode="HTML")
+
+@dp.message(Command("stats"))
+async def stats_cmd(m: types.Message):
+    if m.from_user.id not in admin_cache: return
+    uc = await db.users.count_documents({})
+    mc = await db.movies.count_documents({})
+    now = datetime.datetime.utcnow()
+    new_users_today = await db.users.count_documents({"joined_at": {"$gte": datetime.datetime(now.year, now.month, now.day)}})
+    
+    top_movies = await db.movies.aggregate([{"$group": {"_id": "$title", "clicks": {"$sum": "$clicks"}}}, {"$sort": {"clicks": -1}}, {"$limit": 5}]).to_list(5)
+    top_movies_text = "".join(f"{idx}. {mv['_id'][:20]}... - <b>{format_views(mv['clicks'])} views</b>\n" for idx, mv in enumerate(top_movies, 1))
+    
+    await m.answer(f"📊 <b>অ্যাডভান্সড স্ট্যাটাস:</b>\n\n👥 মোট ইউজার: <code>{uc}</code>\n🟢 আজকের নতুন ইউজার: <code>{new_users_today}</code>\n🎬 মোট ফাইল আপলোড: <code>{mc}</code>\n\n🔥 <b>টপ ৫ মুভি:</b>\n{top_movies_text}", parse_mode="HTML")
+
+@dp.message(Command("ban"))
+async def ban_user_cmd(m: types.Message):
+    if m.from_user.id not in admin_cache: return
+    try:
+        target_uid = int(m.text.split()[1])
+        if target_uid in admin_cache: return await m.answer("⚠️ অ্যাডমিনকে ব্যান করা যাবে না!")
+        await db.banned.update_one({"user_id": target_uid}, {"$set": {"user_id": target_uid}}, upsert=True)
+        banned_cache.add(target_uid)
+        await m.answer(f"🚫 ইউজার <code>{target_uid}</code> ব্যান হয়েছে!", parse_mode="HTML")
+    except Exception: await m.answer("⚠️ সঠিক নিয়ম: <code>/ban ইউজার_আইডি</code>", parse_mode="HTML")
+
+@dp.message(Command("unban"))
+async def unban_user_cmd(m: types.Message):
+    if m.from_user.id not in admin_cache: return
+    try:
+        target_uid = int(m.text.split()[1])
+        await db.banned.delete_one({"user_id": target_uid})
+        banned_cache.discard(target_uid)
+        await m.answer(f"✅ ইউজার <code>{target_uid}</code> আনব্যান হয়েছে!", parse_mode="HTML")
+    except Exception: await m.answer("⚠️ সঠিক নিয়ম: <code>/unban ইউজার_আইডি</code>", parse_mode="HTML")
+
+@dp.message(Command("protect"))
+async def protect_cmd(m: types.Message):
+    if m.from_user.id not in admin_cache: return
+    try:
+        state = m.text.split(" ")[1].lower()
+        await db.settings.update_one({"id": "protect_content"}, {"$set": {"status": state == "on"}}, upsert=True)
+        await m.answer(f"✅ ফরোয়ার্ড প্রোটেকশন {'চালু' if state == 'on' else 'বন্ধ'} করা হয়েছে।")
+    except Exception: await m.answer("⚠️ সঠিক নিয়ম: <code>/protect on</code> বা <code>off</code>")
+
+@dp.message(Command("settime"))
+async def set_del_time(m: types.Message):
+    if m.from_user.id not in admin_cache: return
+    try:
+        await db.settings.update_one({"id": "del_time"}, {"$set": {"minutes": int(m.text.split(" ")[1])}}, upsert=True)
+        await m.answer("✅ অটো-ডিলিট টাইম সেট করা হয়েছে।")
+    except Exception: await m.answer("⚠️ সঠিক নিয়ম: <code>/settime 60</code> (মিনিট)")
+
+@dp.message(Command("setbkash"))
+async def set_bkash(m: types.Message):
+    if m.from_user.id not in admin_cache: return
+    try:
+        num = m.text.split(" ")[1]
+        await db.settings.update_one({"id": "bkash_no"}, {"$set": {"number": num}}, upsert=True)
+        await m.answer(f"✅ বিকাশ নাম্বার সেট করা হয়েছে: <b>{num}</b>", parse_mode="HTML")
+    except Exception: await m.answer("⚠️ সঠিক নিয়ম: <code>/setbkash 017XXXXXXX</code>")
+
+@dp.message(Command("setnagad"))
+async def set_nagad(m: types.Message):
+    if m.from_user.id not in admin_cache: return
+    try:
+        num = m.text.split(" ")[1]
+        await db.settings.update_one({"id": "nagad_no"}, {"$set": {"number": num}}, upsert=True)
+        await m.answer(f"✅ নগদ নাম্বার সেট করা হয়েছে: <b>{num}</b>", parse_mode="HTML")
+    except Exception: await m.answer("⚠️ সঠিক নিয়ম: <code>/setnagad 017XXXXXXX</code>")
+
+@dp.message(Command("addvip"))
+async def add_vip_cmd(m: types.Message):
+    if m.from_user.id not in admin_cache: return
+    try:
+        args = m.text.split()
+        target_uid = int(args[1])
+        days = int(args[2]) if len(args) > 2 else 30 
+        
+        now = datetime.datetime.utcnow()
+        user = await db.users.find_one({"user_id": target_uid})
+        if not user: return await m.answer("⚠️ এই ইউজারটি ডাটাবেসে নেই। তাকে আগে বট স্টার্ট করতে বলুন।")
+
+        current_vip = max(user.get("vip_until", now), now)
+        await db.users.update_one({"user_id": target_uid}, {"$set": {"vip_until": current_vip + datetime.timedelta(days=days)}})
+        await m.answer(f"✅ ইউজার <code>{target_uid}</code> কে <b>{days} দিনের</b> VIP দেওয়া হয়েছে!", parse_mode="HTML")
+        try: await bot.send_message(target_uid, f"🎉 <b>অভিনন্দন!</b> অ্যাডমিন আপনাকে <b>{days} দিনের</b> VIP দিয়েছেন।", parse_mode="HTML")
+        except Exception: pass
+    except Exception: await m.answer("⚠️ সঠিক নিয়ম: <code>/addvip ইউজার_আইডি দিন</code>", parse_mode="HTML")
+
+@dp.callback_query(F.data.startswith("trx_"))
+async def handle_trx_approval(c: types.CallbackQuery):
+    if c.from_user.id not in admin_cache: return
+    action, _, pay_id = c.data.split("_")
+    
+    payment = await db.payments.find_one({"_id": ObjectId(pay_id)})
+    if not payment or payment["status"] != "pending": return await c.answer("⚠️ ইতিমধ্যে প্রসেস করা হয়েছে!", show_alert=True)
+        
+    user_id = payment["user_id"]
+    days = payment["days"]
+    
+    if action == "approve":
+        now = datetime.datetime.utcnow()
+        user = await db.users.find_one({"user_id": user_id})
+        current_vip = max(user.get("vip_until", now) if user else now, now)
+        
+        await db.users.update_one({"user_id": user_id}, {"$set": {"vip_until": current_vip + datetime.timedelta(days=days)}})
+        await db.payments.update_one({"_id": ObjectId(pay_id)}, {"$set": {"status": "approved"}})
+        
+        await c.message.edit_text(c.message.text + f"\n\n✅ <b>পেমেন্ট অ্যাপ্রুভ করা হয়েছে! ({days} Days)</b>", parse_mode="HTML")
+        try: await bot.send_message(user_id, f"🎉 <b>পেমেন্ট সফল!</b> আপনাকে <b>{days} দিনের</b> VIP দেওয়া হয়েছে!", parse_mode="HTML")
+        except: pass
+    else:
+        await db.payments.update_one({"_id": ObjectId(pay_id)}, {"$set": {"status": "rejected"}})
+        await c.message.edit_text(c.message.text + "\n\n❌ <b>পেমেন্ট রিজেক্ট করা হয়েছে!</b>", parse_mode="HTML")
+        try: await bot.send_message(user_id, f"❌ <b>দুঃখিত!</b> আপনার পেমেন্ট (TrxID: {payment['trx_id']}) বাতিল করা হয়েছে।", parse_mode="HTML")
+        except: pass
+
+@dp.callback_query(F.data.startswith("req_"))
+async def handle_request_approval(c: types.CallbackQuery):
+    if c.from_user.id not in admin_cache: return
+    action, _, req_id = c.data.split("_")
+    req = await db.requests.find_one({"_id": ObjectId(req_id)})
+    if not req: return await c.answer("⚠️ রিকোয়েস্টটি ডিলিট বা প্রসেস করা হয়েছে!", show_alert=True)
+        
+    movie_name = req["movie"]
+    if action == "acc":
+        await c.message.edit_text(c.message.text + "\n\n✅ <b>Approve করা হয়েছে!</b>", parse_mode="HTML")
+        for v_id in req.get("voters", []):
+            try: await bot.send_message(v_id, f"🎉 <b>সুখবর!</b> আপনার রিকোয়েস্ট করা মুভি <b>{movie_name}</b> অ্যাপে আপলোড করা হয়েছে!", parse_mode="HTML")
+            except: pass
+    elif action == "rej":
+        await c.message.edit_text(c.message.text + "\n\n❌ <b>Reject করা হয়েছে!</b>", parse_mode="HTML")
+    await db.requests.delete_one({"_id": ObjectId(req_id)})
+
+# ==========================================
+# Original Quick Upload Fallback 
+# ==========================================
+@dp.message(StateFilter(None), F.video | F.document)
+async def receive_movie_file(m: types.Message, state: FSMContext):
+    if m.from_user.id not in admin_cache: return
+    fid = m.video.file_id if m.video else m.document.file_id
+    ftype = "video" if m.video else "document"
+    await state.set_state(AdminStates.waiting_for_photo)
+    await state.update_data(file_id=fid, file_type=ftype)
+    await m.answer("✅ (কুইক আপলোড) ফাইল পেয়েছি! এবার মুভির <b>পোস্টার (Photo)</b> সেন্ড করুন।\nবাতিল করতে /start দিন।", parse_mode="HTML")
+
+@dp.message(AdminStates.waiting_for_photo, F.photo)
+async def receive_movie_photo(m: types.Message, state: FSMContext):
+    msg = await m.answer("⏳ <i>পোস্টারটি পারমানেন্ট সার্ভারে আপলোড হচ্ছে...</i>", parse_mode="HTML")
+    file_id = m.photo[-1].file_id
+    
+    img_url = await upload_to_telegraph(file_id)
+    if not img_url:
+        img_url = file_id 
+        
+    await state.update_data(photo_id=img_url)
+    await state.set_state(AdminStates.waiting_for_title)
+    await msg.edit_text("✅ পোস্টার সেভ হয়েছে! এবার <b>মুভি বা ওয়েব সিরিজের নাম</b> লিখে পাঠান।\n<i>(নোট: যদি ওয়েব সিরিজ হয় বা অন্য কোয়ালিটি হয়, আগের নামটিই হুবহু দিন)</i>", parse_mode="HTML")
+
+@dp.message(AdminStates.waiting_for_title, F.text)
+async def receive_movie_title(m: types.Message, state: FSMContext):
+    await state.update_data(title=m.text.strip())
+    await state.set_state(AdminStates.waiting_for_quality)
+    await m.answer("✅ নাম সেভ হয়েছে! এবার এই ফাইলটির <b>কোয়ালিটি বা এপিসোড নাম্বার</b> দিন।\n<i>(উদাহরণ: 1080p অথবা Episode 01)</i>", parse_mode="HTML")
+
+@dp.message(AdminStates.waiting_for_quality, F.text)
+async def receive_movie_quality(m: types.Message, state: FSMContext):
+    quality = m.text.strip()
+    data = await state.get_data()
+    await state.clear()
+    
+    title = data["title"]
+    photo_id = data["photo_id"]
+    file_id = data["file_id"]
+    
+    await db.movies.insert_one({
+        "title": title, "quality": quality, "photo_id": photo_id, 
+        "file_id": file_id, "file_type": data["file_type"],
+        "genres": ["All"], "movie_lang": "N/A", 
+        "clicks": 0, "created_at": datetime.datetime.utcnow()
+    })
+    
+    CACHE_DATA["list"].clear()
+    CACHE_DATA["trending"]["time"] = 0
+    
+    if DUMP_CHANNEL_ID:
+        try:
+            dump_caption = f"#BACKUP_QUICK\n🎬 <b>Title:</b> {title}\n🏷 <b>Quality:</b> {quality}"
+            if data["file_type"] == "video":
+                await bot.send_video(chat_id=DUMP_CHANNEL_ID, video=file_id, caption=dump_caption, parse_mode="HTML")
+            else:
+                await bot.send_document(chat_id=DUMP_CHANNEL_ID, document=file_id, caption=dump_caption, parse_mode="HTML")
+        except Exception: pass
+
+    await m.answer(f"🎉 <b>{title} [{quality}]</b> অ্যাপে সফলভাবে যুক্ত করা হয়েছে!", parse_mode="HTML")
+    
+    req = await db.requests.find_one({"movie": {"$regex": f"^{title}$", "$options": "i"}})
+    if req:
+        for v_id in req.get("voters", []):
+            try: await bot.send_message(v_id, f"🔔 🎉 সুখবর! আপনার রিকোয়েস্ট করা মুভি <b>{title}</b> অ্যাপে আপলোড করা হয়েছে!", parse_mode="HTML")
+            except Exception: pass
+        await db.requests.delete_one({"_id": req["_id"]})
+    
+    if CHANNEL_ID and CHANNEL_ID != "-100XXXXXXXXXX":
+        try:
+            old_post = await db.channel_posts.find_one({"title": title})
+            if old_post:
+                try: await bot.delete_message(chat_id=CHANNEL_ID, message_id=old_post["message_id"])
+                except Exception: pass
+            
+            bot_info = await bot.get_me()
+            kb = [[types.InlineKeyboardButton(text="🎬 মুভিটি ডাউনলোড করুন", url=f"https://t.me/{bot_info.username}?start=new")]]
+            caption = f"🎬 <b>নতুন ফাইল যুক্ত হয়েছে!</b>\n\n📌 <b>নাম:</b> {title}\n🏷 <b>কোয়ালিটি/এপিসোড:</b> {quality}\n\n👇 <i>ডাউনলোড করতে নিচের বাটনে ক্লিক করুন।</i>"
+            
+            if photo_id.startswith("http"):
+                sent_msg = await bot.send_photo(chat_id=CHANNEL_ID, photo=photo_id, caption=caption, parse_mode="HTML", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb))
+            else:
+                sent_msg = await bot.send_photo(chat_id=CHANNEL_ID, photo=photo_id, caption=caption, parse_mode="HTML", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb))
+                
+            await db.channel_posts.update_one({"title": title}, {"$set": {"message_id": sent_msg.message_id}}, upsert=True)
+        except Exception: pass
+
+@dp.message(Command("cast"))
+async def broadcast_prep(m: types.Message, state: FSMContext):
+    if m.from_user.id not in admin_cache: return
+    await state.set_state(AdminStates.waiting_for_bcast)
+    await m.answer("📢 যে মেসেজটি ব্রডকাস্ট করতে চান সেটি পাঠান।\nবাতিল করতে /start দিন।")
+
+@dp.message(AdminStates.waiting_for_bcast)
+async def execute_broadcast(m: types.Message, state: FSMContext):
+    await state.clear()
+    await m.answer("⏳ ব্রডকাস্ট শুরু হয়েছে...")
+    kb = [[types.InlineKeyboardButton(text="🎬 ওপেন মুভি অ্যাপ", web_app=types.WebAppInfo(url=APP_URL))]]
+    success = 0
+    async for u in db.users.find():
+        try:
+            await m.copy_to(chat_id=u['user_id'], reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb))
+            success += 1
+            await asyncio.sleep(0.05)
+        except Exception: pass
+    await m.answer(f"✅ সম্পন্ন! সর্বমোট <b>{success}</b> জনকে মেসেজ পাঠানো হয়েছে।", parse_mode="HTML")
+
+@dp.callback_query(F.data.startswith("reply_"))
+async def process_reply_cb(c: types.CallbackQuery, state: FSMContext):
+    if c.from_user.id not in admin_cache: return
+    await state.set_state(AdminStates.waiting_for_reply)
+    await state.update_data(target_uid=int(c.data.split("_")[1]))
+    await c.message.reply("✍️ <b>ইউজারকে কী রিপ্লাই দিতে চান তা লিখে পাঠান:</b>", parse_mode="HTML")
+    await c.answer()
+
+@dp.message(AdminStates.waiting_for_reply)
+async def send_reply(m: types.Message, state: FSMContext):
+    data = await state.get_data()
+    await state.clear()
+    try:
+        if m.text: await bot.send_message(data.get("target_uid"), f"📩 <b>অ্যাডমিন রিপ্লাই:</b>\n\n{m.text}", parse_mode="HTML")
+        else: await m.copy_to(data.get("target_uid"), caption=f"📩 <b>অ্যাডমিন রিপ্লাই:</b>\n\n{m.caption or ''}", parse_mode="HTML")
+        await m.answer("✅ ইউজারকে সফলভাবে রিপ্লাই পাঠানো হয়েছে!")
+    except Exception: await m.answer("⚠️ রিপ্লাই পাঠানো যায়নি! ইউজার হয়তো বট ব্লক করেছে।")
+
+# ==========================================
+# Web Admin Panel API & HTML (NEW SUPER DASHBOARD)
+# ==========================================
+@app.get("/admin", response_class=HTMLResponse)
+async def web_admin_panel(auth: bool = Depends(verify_admin)):
+    html_content = r"""
+    <!DOCTYPE html>
+    <html lang="bn">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>MovieZone Super Admin</title>
+        <script src="https://cdn.tailwindcss.com"></script>
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+        <style>
+            body { background: #0f1115; color: #f4f4f5; font-family: sans-serif; }
+            .glass-panel { background: rgba(26, 29, 36, 0.95); border: 1px solid #252933; border-radius: 16px; padding: 20px; }
+            .nav-btn { padding: 12px 20px; border-radius: 12px; font-weight: bold; color: #a1a1aa; cursor: pointer; transition: 0.3s; display: flex; align-items: center; gap: 10px; }
+            .nav-btn:hover { background: #252933; color: white; }
+            .nav-btn.active { background: #e11d48; color: white; box-shadow: 0 0 15px rgba(225, 29, 72, 0.4); }
+            .tab-section { display: none; animation: fadeIn 0.3s ease; }
+            .tab-section.active { display: block; }
+            @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+            input, select { background: #1a1d24; border: 1px solid #252933; color: white; padding: 12px; border-radius: 8px; width: 100%; outline: none; }
+            input:focus { border-color: #e11d48; }
+            .btn-action { background: #10b981; color: white; padding: 10px 15px; border-radius: 8px; font-weight: bold; cursor: pointer; border: none; }
+            .btn-danger { background: #ef4444; color: white; padding: 10px 15px; border-radius: 8px; font-weight: bold; cursor: pointer; border: none; }
+            .btn-edit { background: #3b82f6; color: white; padding: 8px 12px; border-radius: 8px; font-weight: bold; cursor: pointer; border: none; }
+            
+            /* Modal Styles */
+            .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.8); backdrop-filter: blur(5px); }
+            .modal-content { background-color: #1a1d24; margin: 5% auto; padding: 25px; border: 1px solid #252933; border-radius: 16px; width: 80%; max-width: 600px; color: white; }
+            .close { color: #aaa; float: right; font-size: 28px; font-weight: bold; cursor: pointer; }
+            .close:hover { color: white; }
+            .file-list-admin { max-height: 250px; overflow-y: auto; background: #0f1115; padding: 10px; border-radius: 8px; margin-top: 15px; }
+            .file-item-admin { display: flex; justify-content: space-between; padding: 10px; border-bottom: 1px solid #252933; align-items: center; }
+        </style>
+    </head>
+    <body class="flex h-screen overflow-hidden">
+        
+        <!-- Sidebar -->
+        <div class="w-64 glass-panel m-4 flex flex-col gap-4">
+            <h1 class="text-2xl font-extrabold text-red-500 text-center mb-6 border-b border-gray-700 pb-4"><i class="fa-solid fa-shield-halved"></i> Super Admin</h1>
+            <div class="nav-btn active" onclick="switchTab('dashboard', this)"><i class="fa-solid fa-chart-line"></i> Dashboard</div>
+            <div class="nav-btn" onclick="switchTab('settings', this)"><i class="fa-solid fa-gear"></i> App Settings</div>
+            <div class="nav-btn" onclick="switchTab('users', this)"><i class="fa-solid fa-users-gear"></i> User Control</div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="flex-1 overflow-y-auto p-4 pl-0">
+            
+            <!-- Dashboard Tab -->
+            <div id="dashboard" class="tab-section active">
+                <div class="grid grid-cols-3 gap-6 mb-6">
+                    <div class="glass-panel text-center"><h3 class="text-gray-400 text-sm font-bold">TOTAL USERS</h3><p class="text-4xl font-bold text-green-400 mt-2" id="statUsers">0</p></div>
+                    <div class="glass-panel text-center"><h3 class="text-gray-400 text-sm font-bold">TOTAL MOVIES</h3><p class="text-4xl font-bold text-blue-400 mt-2" id="statMovies">0</p></div>
+                    <div class="glass-panel text-center"><h3 class="text-gray-400 text-sm font-bold">NEW USERS TODAY</h3><p class="text-4xl font-bold text-yellow-400 mt-2" id="statNew">0</p></div>
+                </div>
+
+                <div class="glass-panel">
+                    <div class="flex justify-between items-center mb-4">
+                        <h2 class="text-xl font-bold text-gray-200"><i class="fa-solid fa-film text-red-400"></i> Manage Movies</h2>
+                        <input type="text" id="adminSearch" placeholder="Search movie to edit/delete..." class="w-1/3" onkeyup="filterAdminMovies()">
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left text-sm whitespace-nowrap">
+                            <thead class="bg-gray-800 text-gray-300">
+                                <tr>
+                                    <th class="p-4 rounded-tl-lg">Movie / Series Title</th>
+                                    <th class="p-4">Total Views</th>
+                                    <th class="p-4">Files</th>
+                                    <th class="p-4 rounded-tr-lg text-right">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="movieTableBody"><tr><td colspan="4" class="text-center p-8">Loading data...</td></tr></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Settings Tab -->
+            <div id="settings" class="tab-section">
+                <div class="grid grid-cols-2 gap-6">
+                    <!-- Config Form -->
+                    <div class="glass-panel">
+                        <h2 class="text-xl font-bold text-gray-200 mb-6"><i class="fa-solid fa-sliders text-blue-400"></i> App Configurations</h2>
+                        <div class="mb-4">
+                            <label class="text-gray-400 text-sm font-bold">bKash Number</label>
+                            <div class="flex gap-2 mt-1"><input type="text" id="setBkash"><button class="btn-action" onclick="saveSetting('bkash')">Save</button></div>
+                        </div>
+                        <div class="mb-4">
+                            <label class="text-gray-400 text-sm font-bold">Nagad Number</label>
+                            <div class="flex gap-2 mt-1"><input type="text" id="setNagad"><button class="btn-action" onclick="saveSetting('nagad')">Save</button></div>
+                        </div>
+                        <div class="mb-4">
+                            <label class="text-gray-400 text-sm font-bold">Telegram Floating Link</label>
+                            <div class="flex gap-2 mt-1"><input type="text" id="setTgLink" placeholder="https://t.me/yourchannel"><button class="btn-action" onclick="saveSetting('tg_link')">Save</button></div>
+                        </div>
+                        <div class="mb-4">
+                            <label class="text-gray-400 text-sm font-bold">18+ Floating Link</label>
+                            <div class="flex gap-2 mt-1"><input type="text" id="set18Link" placeholder="https://t.me/your18channel"><button class="btn-action" onclick="saveSetting('link_18')">Save</button></div>
+                        </div>
+                        <div class="mb-4">
+                            <label class="text-gray-400 text-sm font-bold">Auto-Delete Time (Minutes)</label>
+                            <div class="flex gap-2 mt-1"><input type="number" id="setDelTime"><button class="btn-action" onclick="saveSetting('time')">Save</button></div>
+                        </div>
+                        <div class="mb-4 border-t border-gray-700 pt-4 mt-4">
+                            <label class="text-green-400 text-sm font-bold"><i class="fa-solid fa-clock"></i> Movie Unlock Duration (Hours)</label>
+                            <p class="text-xs text-gray-400 mb-1">How long a movie stays unlocked after watching an ad.</p>
+                            <div class="flex gap-2 mt-1"><input type="number" id="setUnlockTime" placeholder="e.g. 24"><button class="btn-action" onclick="saveSetting('unlock_time')">Save</button></div>
+                        </div>
+                    </div>
+
+                    <!-- Direct Links Manager -->
+                    <div class="glass-panel">
+                        <h2 class="text-xl font-bold text-gray-200 mb-6"><i class="fa-solid fa-link text-yellow-400"></i> Direct Links Manager</h2>
+                        <div class="flex gap-2 mb-6">
+                            <input type="url" id="newLink" placeholder="https://ad-link.com">
+                            <button class="btn-action" onclick="addLink()"><i class="fa-solid fa-plus"></i> Add</button>
+                        </div>
+                        <div id="linksContainer" class="flex flex-col gap-2 max-h-64 overflow-y-auto"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- User Control Tab -->
+            <div id="users" class="tab-section">
+                <div class="glass-panel max-w-xl mx-auto mt-10">
+                    <h2 class="text-xl font-bold text-gray-200 mb-6 text-center"><i class="fa-solid fa-user-shield text-purple-400"></i> User Access Control</h2>
+                    <div class="mb-4">
+                        <label class="text-gray-400 text-sm font-bold">Telegram User ID</label>
+                        <input type="number" id="ctrlUserId" placeholder="e.g. 123456789" class="mt-1">
+                    </div>
+                    <div class="grid grid-cols-2 gap-4 mt-6">
+                        <button class="btn-action bg-green-600" onclick="userAction('vip')"><i class="fa-solid fa-crown"></i> Give VIP (30 Days)</button>
+                        <button class="btn-danger" onclick="userAction('ban')"><i class="fa-solid fa-ban"></i> Ban User</button>
+                        <button class="btn-action bg-blue-600 col-span-2" onclick="userAction('unban')"><i class="fa-solid fa-check"></i> Unban User</button>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- Edit Movie Modal -->
+        <div id="editModal" class="modal">
+            <div class="modal-content">
+                <span class="close" onclick="closeEditModal()">&times;</span>
+                <h2 class="text-2xl font-bold mb-4 text-blue-400"><i class="fa-solid fa-pen-to-square"></i> Edit Movie</h2>
+                
+                <label class="text-gray-400 text-sm font-bold">Movie Name</label>
+                <div class="flex gap-2 mt-1 mb-4">
+                    <input type="text" id="editMovieTitle">
+                    <button class="btn-action" onclick="saveMovieRename()"><i class="fa-solid fa-save"></i> Save Name</button>
+                </div>
+                
+                <h3 class="text-lg font-bold mt-4 text-gray-300 border-b border-gray-700 pb-2">Movie Files/Qualities</h3>
+                <div id="editFileList" class="file-list-admin">
+                    <!-- Files will be loaded here -->
+                </div>
+            </div>
+        </div>
+
+        <script>
+            let allMovies = [];
+            let currentEditingMovie = "";
+            
+            function switchTab(tabId, btn) {
+                document.querySelectorAll('.tab-section').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+                document.getElementById(tabId).classList.add('active');
+                btn.classList.add('active');
+                if(tabId === 'settings') loadSettings();
+            }
+
+            async function loadDashboardData() {
+                try {
+                    const res = await fetch('/api/admin/data');
+                    const data = await res.json();
+                    document.getElementById('statUsers').innerText = data.total_users;
+                    document.getElementById('statMovies').innerText = data.total_groups;
+                    document.getElementById('statNew').innerText = data.new_users_today;
+                    allMovies = data.movies;
+                    renderAdminMovies(allMovies);
+                } catch (e) {}
+            }
+
+            function renderAdminMovies(movies) {
+                let html = '';
+                movies.forEach(m => {
+                    html += `<tr class="border-b border-gray-800 hover:bg-gray-800 transition">
+                        <td class="p-4 font-medium">${m._id}</td>
+                        <td class="p-4 text-gray-400"><i class="fa-solid fa-eye text-gray-500"></i> ${m.clicks}</td>
+                        <td class="p-4 text-green-400 font-bold">${m.file_count}</td>
+                        <td class="p-4 text-right flex justify-end gap-2">
+                            <button onclick="openEditModal('${encodeURIComponent(m._id)}')" class="btn-edit hover:bg-blue-600 transition"><i class="fa-solid fa-pen"></i> Edit</button>
+                            <button onclick="deleteMovie('${encodeURIComponent(m._id)}')" class="bg-red-900 bg-opacity-40 text-red-400 hover:bg-red-600 hover:text-white px-3 py-1 rounded-lg transition"><i class="fa-solid fa-trash"></i> Del</button>
+                        </td>
+                    </tr>`;
+                });
+                document.getElementById('movieTableBody').innerHTML = html || '<tr><td colspan="4" class="text-center p-8">No movies found</td></tr>';
+            }
+
+            function filterAdminMovies() {
+                const q = document.getElementById('adminSearch').value.toLowerCase();
+                const filtered = allMovies.filter(m => m._id.toLowerCase().includes(q));
+                renderAdminMovies(filtered);
+            }
+
+            async function deleteMovie(encodedTitle) {
+                if(!confirm('Are you sure you want to delete ALL files for this movie?')) return;
+                await fetch('/api/admin/movie/' + encodedTitle, {method: 'DELETE'});
+                alert('Movie Deleted!');
+                loadDashboardData();
+            }
+
+            // --- EDIT MOVIE LOGIC ---
+            function openEditModal(encodedTitle) {
+                const title = decodeURIComponent(encodedTitle);
+                currentEditingMovie = title;
+                const movie = allMovies.find(m => m._id === title);
+                if(!movie) return;
+                
+                document.getElementById('editMovieTitle').value = title;
+                
+                let fileHtml = '';
+                if(movie.files && movie.files.length > 0) {
+                    movie.files.forEach(f => {
+                        fileHtml += `
+                        <div class="file-item-admin">
+                            <div><i class="fa-solid fa-file-video text-gray-500 mr-2"></i> <b>${f.quality}</b></div>
+                            <button onclick="deleteSingleFile('${f.id}')" class="text-red-400 hover:text-red-500 bg-red-900 bg-opacity-30 px-3 py-1 rounded"><i class="fa-solid fa-trash"></i> Delete File</button>
+                        </div>`;
+                    });
+                } else {
+                    fileHtml = '<p class="text-gray-500 text-center py-4">No files found.</p>';
+                }
+                document.getElementById('editFileList').innerHTML = fileHtml;
+                document.getElementById('editModal').style.display = "block";
+            }
+
+            function closeEditModal() {
+                document.getElementById('editModal').style.display = "none";
+            }
+
+            async function saveMovieRename() {
+                const newTitle = document.getElementById('editMovieTitle').value.trim();
+                if(!newTitle || newTitle === currentEditingMovie) return;
+                
+                try {
+                    const res = await fetch('/api/admin/movie/rename', {
+                        method: 'POST', headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ old_title: currentEditingMovie, new_title: newTitle })
+                    });
+                    const data = await res.json();
+                    if(data.ok) {
+                        alert("Movie renamed successfully!");
+                        closeEditModal();
+                        loadDashboardData();
+                    } else { alert("Error renaming movie."); }
+                } catch(e) { alert("Network error."); }
+            }
+
+            async function deleteSingleFile(fileId) {
+                if(!confirm("Are you sure you want to delete this specific quality/file?")) return;
+                try {
+                    const res = await fetch('/api/admin/movie/file/' + fileId, { method: 'DELETE' });
+                    const data = await res.json();
+                    if(data.ok) {
+                        alert("File deleted.");
+                        closeEditModal();
+                        loadDashboardData();
+                    }
+                } catch(e) {}
+            }
+            // ------------------------
+
+            async function loadSettings() {
+                const res = await fetch('/api/admin/settings_data');
+                const data = await res.json();
+                document.getElementById('setBkash').value = data.bkash;
+                document.getElementById('setNagad').value = data.nagad;
+                document.getElementById('setDelTime').value = data.del_time;
+                document.getElementById('setTgLink').value = data.tg_link;
+                document.getElementById('set18Link').value = data.link_18;
+                document.getElementById('setUnlockTime').value = data.unlock_duration;
+                
+                document.getElementById('linksContainer').innerHTML = data.links.map(l => `
+                    <div class="flex justify-between items-center bg-gray-800 p-3 rounded-lg border border-gray-700">
+                        <span class="text-sm truncate mr-4">${l}</span>
+                        <button onclick="deleteLink('${encodeURIComponent(l)}')" class="text-red-400 hover:text-red-500"><i class="fa-solid fa-trash"></i></button>
+                    </div>
+                `).join('');
+            }
+
+            async function saveSetting(type) {
+                let val = "";
+                if(type==='bkash') val = document.getElementById('setBkash').value;
+                if(type==='nagad') val = document.getElementById('setNagad').value;
+                if(type==='time') val = document.getElementById('setDelTime').value;
+                if(type==='tg_link') val = document.getElementById('setTgLink').value;
+                if(type==='link_18') val = document.getElementById('set18Link').value;
+                if(type==='unlock_time') val = document.getElementById('setUnlockTime').value;
+                
+                await fetch('/api/admin/update_setting', {
+                    method: 'POST', headers:{'Content-Type': 'application/json'},
+                    body: JSON.stringify({type: type, value: val})
+                });
+                alert('Settings Updated!');
+            }
+
+            async function addLink() {
+                const url = document.getElementById('newLink').value;
+                if(!url) return;
+                await fetch('/api/admin/links', {
+                    method: 'POST', headers:{'Content-Type': 'application/json'},
+                    body: JSON.stringify({link: url})
+                });
+                document.getElementById('newLink').value = '';
+                loadSettings();
+            }
+
+            async function deleteLink(url) {
+                await fetch('/api/admin/links?link=' + url, {method: 'DELETE'});
+                loadSettings();
+            }
+
+            async function userAction(action) {
+                const uid = document.getElementById('ctrlUserId').value;
+                if(!uid) return alert("Enter User ID!");
+                const res = await fetch('/api/admin/user_action', {
+                    method: 'POST', headers:{'Content-Type': 'application/json'},
+                    body: JSON.stringify({user_id: parseInt(uid), action: action})
+                });
+                const data = await res.json();
+                alert(data.msg);
+                document.getElementById('ctrlUserId').value = '';
+            }
+
+            loadDashboardData();
+        </script>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
+
+@app.get("/api/admin/data")
+async def get_admin_data(auth: bool = Depends(verify_admin)):
+    uc = await db.users.count_documents({})
+    now = datetime.datetime.utcnow()
+    new_users = await db.users.count_documents({"joined_at": {"$gte": datetime.datetime(now.year, now.month, now.day)}})
+    pipeline = [{"$group": {"_id": "$title", "clicks": {"$sum": "$clicks"}, "file_count": {"$sum": 1}, "created_at": {"$max": "$created_at"}, "files": {"$push": {"id": {"$toString": "$_id"}, "quality": {"$ifNull": ["$quality", "Main File"]}}}}}, {"$sort": {"created_at": -1}}, {"$limit": 100}]
+    movies = await db.movies.aggregate(pipeline).to_list(100)
+    return {"total_users": uc, "total_groups": len(movies), "new_users_today": new_users, "movies": movies}
+
+@app.delete("/api/admin/movie/{title}")
+async def delete_movie_api(title: str, auth: bool = Depends(verify_admin)):
+    await db.movies.delete_many({"title": title})
+    CACHE_DATA["list"].clear()
+    CACHE_DATA["trending"]["time"] = 0
+    return {"ok": True}
+
+# --- Admin Edit APIs ---
+class RenameMovieModel(BaseModel):
+    old_title: str
+    new_title: str
+
+@app.post("/api/admin/movie/rename")
+async def rename_movie_api(data: RenameMovieModel, auth: bool = Depends(verify_admin)):
+    await db.movies.update_many({"title": data.old_title}, {"$set": {"title": data.new_title}})
+    CACHE_DATA["list"].clear()
+    CACHE_DATA["trending"]["time"] = 0
+    return {"ok": True}
+
+@app.delete("/api/admin/movie/file/{file_id}")
+async def delete_single_file_api(file_id: str, auth: bool = Depends(verify_admin)):
+    await db.movies.delete_one({"_id": ObjectId(file_id)})
+    CACHE_DATA["list"].clear()
+    CACHE_DATA["trending"]["time"] = 0
+    return {"ok": True}
+# -----------------------
+
+@app.get("/api/admin/settings_data")
+async def get_settings_data(auth: bool = Depends(verify_admin)):
+    bkash = await db.settings.find_one({"id": "bkash_no"})
+    nagad = await db.settings.find_one({"id": "nagad_no"})
+    dtime = await db.settings.find_one({"id": "del_time"})
+    dlinks = await db.settings.find_one({"id": "direct_links"})
+    tg_cfg = await db.settings.find_one({"id": "link_tg"})
+    b18_cfg = await db.settings.find_one({"id": "link_18"})
+    unlock_cfg = await db.settings.find_one({"id": "unlock_duration"})
+    
+    return {
+        "bkash": bkash["number"] if bkash else "",
+        "nagad": nagad["number"] if nagad else "",
+        "del_time": dtime["minutes"] if dtime else 60,
+        "tg_link": tg_cfg["url"] if tg_cfg else "",
+        "link_18": b18_cfg["url"] if b18_cfg else "",
+        "unlock_duration": unlock_cfg["hours"] if unlock_cfg else 24,
+        "links": dlinks["links"] if dlinks and "links" in dlinks else []
+    }
+
+class SettingUpdateModel(BaseModel):
+    type: str
+    value: str
+
+@app.post("/api/admin/update_setting")
+async def update_setting_api(data: SettingUpdateModel, auth: bool = Depends(verify_admin)):
+    if data.type == "bkash": await db.settings.update_one({"id": "bkash_no"}, {"$set": {"number": data.value}}, upsert=True)
+    if data.type == "nagad": await db.settings.update_one({"id": "nagad_no"}, {"$set": {"number": data.value}}, upsert=True)
+    if data.type == "time": await db.settings.update_one({"id": "del_time"}, {"$set": {"minutes": int(data.value)}}, upsert=True)
+    if data.type == "tg_link": await db.settings.update_one({"id": "link_tg"}, {"$set": {"url": data.value}}, upsert=True)
+    if data.type == "link_18": await db.settings.update_one({"id": "link_18"}, {"$set": {"url": data.value}}, upsert=True)
+    if data.type == "unlock_time": await db.settings.update_one({"id": "unlock_duration"}, {"$set": {"hours": int(data.value)}}, upsert=True)
+    return {"ok": True}
+
+class LinkModel(BaseModel): link: str
+
+@app.post("/api/admin/links")
+async def add_link_api(data: LinkModel, auth: bool = Depends(verify_admin)):
+    await db.settings.update_one({"id": "direct_links"}, {"$addToSet": {"links": data.link}}, upsert=True)
+    return {"ok": True}
+
+@app.delete("/api/admin/links")
+async def del_link_api(link: str, auth: bool = Depends(verify_admin)):
+    await db.settings.update_one({"id": "direct_links"}, {"$pull": {"links": link}})
+    return {"ok": True}
+
+class UserActionModel(BaseModel):
+    user_id: int
+    action: str
+
+@app.post("/api/admin/user_action")
+async def admin_user_action(data: UserActionModel, auth: bool = Depends(verify_admin)):
+    uid = data.user_id
+    if data.action == "vip":
+        now = datetime.datetime.utcnow()
+        user = await db.users.find_one({"user_id": uid})
+        if not user: return {"msg": "User not found in DB!"}
+        current_vip = max(user.get("vip_until", now), now)
+        await db.users.update_one({"user_id": uid}, {"$set": {"vip_until": current_vip + datetime.timedelta(days=30)}})
+        try: await bot.send_message(uid, "🎉 <b>অভিনন্দন!</b> অ্যাডমিন আপনাকে <b>৩০ দিনের VIP</b> দিয়েছেন।", parse_mode="HTML")
+        except: pass
+        return {"msg": f"VIP given to {uid} successfully!"}
+        
+    elif data.action == "ban":
+        if uid in admin_cache: return {"msg": "Cannot ban an admin!"}
+        await db.banned.update_one({"user_id": uid}, {"$set": {"user_id": uid}}, upsert=True)
+        banned_cache.add(uid)
+        return {"msg": f"User {uid} Banned!"}
+        
+    elif data.action == "unban":
+        await db.banned.delete_one({"user_id": uid})
+        banned_cache.discard(uid)
+        return {"msg": f"User {uid} Unbanned!"}
+
+# ==========================================
+# Review APIs
+# ==========================================
+@app.get("/api/reviews")
+async def get_reviews(movie: str):
+    revs = await db.reviews.find({"movie_title": movie}).sort("created_at", -1).to_list(50)
+    
+    total_stars = 0
+    formatted_revs = []
+    for r in revs:
+        total_stars += r.get("rating", 5)
+        formatted_revs.append({
+            "id": str(r["_id"]),
+            "uname": r.get("uname", "User"),
+            "rating": r.get("rating", 5),
+            "text": r.get("text", "")
+        })
+        
+    avg_rating = round(total_stars / len(revs), 1) if revs else 0
+    return {"average": avg_rating, "count": len(revs), "reviews": formatted_revs}
+
+class ReviewPostModel(BaseModel):
+    uid: int; uname: str; movie: str; rating: int; text: str; initData: str
+
+@app.post("/api/review")
+async def post_review(data: ReviewPostModel):
+    if not validate_tg_data(data.initData): return {"ok": False}
+    if data.rating < 1 or data.rating > 5: return {"ok": False}
+    
+    # Check if user already reviewed this movie
+    existing = await db.reviews.find_one({"movie_title": data.movie, "user_id": data.uid})
+    if existing:
+        await db.reviews.update_one({"_id": existing["_id"]}, {"$set": {"rating": data.rating, "text": data.text, "created_at": datetime.datetime.utcnow()}})
+    else:
+        await db.reviews.insert_one({
+            "movie_title": data.movie, "user_id": data.uid, "uname": data.uname,
+            "rating": data.rating, "text": data.text, "created_at": datetime.datetime.utcnow()
+        })
+    return {"ok": True}
+
+@app.delete("/api/review/{rev_id}")
+async def delete_review(rev_id: str):
+    # Called by frontend when isAdmin is true
+    await db.reviews.delete_one({"_id": ObjectId(rev_id)})
+    return {"ok": True}
+
+# ==========================================
+# Main Web App UI 
+# ==========================================
+@app.get("/", response_class=HTMLResponse)
+async def web_ui():
+    ad_cfg = await db.settings.find_one({"id": "ad_config"})
+    tg_cfg = await db.settings.find_one({"id": "link_tg"})
+    b18_cfg = await db.settings.find_one({"id": "link_18"})
+    bkash_cfg = await db.settings.find_one({"id": "bkash_no"})
+    nagad_cfg = await db.settings.find_one({"id": "nagad_no"})
+    dl_cfg = await db.settings.find_one({"id": "direct_links"})
+    
+    zone_id = ad_cfg['zone_id'] if ad_cfg else "10916755"
+    tg_url = tg_cfg['url'] if tg_cfg else "https://t.me/MovieeBD"
+    link_18 = b18_cfg['url'] if b18_cfg else "https://t.me/MovieeBD"
+    bkash_no = bkash_cfg['number'] if bkash_cfg else "Not Set"
+    nagad_no = nagad_cfg['number'] if nagad_cfg else "Not Set"
+    direct_links = dl_cfg.get('links', []) if dl_cfg else []
+    dl_json = json.dumps(direct_links)
+
+    html_code = r"""
+    <!DOCTYPE html>
+    <html lang="bn">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+        <title>MovieZone Premium</title>
+        <script src="https://telegram.org/js/telegram-web-app.js"></script>
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+        <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;800&display=swap" rel="stylesheet">
+        
+        <style>
+            :root {
+                --bg: #0f1115; --surface: #1a1d24; --surface-light: #252933;
+                --primary: #e11d48; --primary-glow: rgba(225, 29, 72, 0.5);
+                --text: #f4f4f5; --text-muted: #a1a1aa;
+                --success: #10b981; --warning: #f59e0b;
+                --glass: rgba(26, 29, 36, 0.8);
+            }
+            
+            * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Poppins', sans-serif; -webkit-tap-highlight-color: transparent; }
+            body { background: var(--bg); color: var(--text); padding-bottom: 80px; overflow-x: hidden; }
+            
+            header { display: flex; justify-content: space-between; align-items: center; padding: 15px 20px; background: var(--glass); backdrop-filter: blur(12px); position: sticky; top: 0; z-index: 1000; border-bottom: 1px solid rgba(255,255,255,0.05); }
+            .logo { font-size: 22px; font-weight: 800; display:flex; align-items:center; gap:5px; }
+            .logo span { background: var(--primary); color: white; padding: 2px 8px; border-radius: 6px; font-size: 14px; text-transform: uppercase; }
+            .header-coins { background: rgba(245, 158, 11, 0.1); border: 1px solid var(--warning); padding: 5px 12px; border-radius: 20px; color: var(--warning); font-weight: 600; font-size: 14px; display:flex; align-items:center; gap:5px; }
+
+            .category-scroll { display: flex; overflow-x: auto; gap: 10px; padding: 15px 20px 10px; scroll-behavior: smooth; }
+            .category-scroll::-webkit-scrollbar { display: none; }
+            .cat-chip { padding: 6px 16px; background: var(--surface); border: 1px solid var(--surface-light); border-radius: 20px; font-size: 13px; font-weight: 600; color: var(--text-muted); white-space: nowrap; cursor: pointer; transition: 0.3s; }
+            .cat-chip.active { background: var(--primary); border-color: var(--primary); color: white; box-shadow: 0 0 10px var(--primary-glow); }
+
+            .tab-content { display: none; animation: fadeIn 0.3s ease; }
+            .tab-content.active { display: block; }
+            @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+            .bottom-nav { position: fixed; bottom: 0; left: 0; width: 100%; background: var(--glass); backdrop-filter: blur(15px); display: flex; justify-content: space-around; padding: 12px 0; border-top: 1px solid rgba(255,255,255,0.05); z-index: 2000; padding-bottom: env(safe-area-inset-bottom, 15px); }
+            .nav-item { display: flex; flex-direction: column; align-items: center; color: var(--text-muted); text-decoration: none; font-size: 11px; font-weight: 600; gap: 4px; cursor: pointer; transition: 0.3s; width: 25%; }
+            .nav-item i { font-size: 20px; transition: 0.3s; }
+            .nav-item.active { color: var(--primary); }
+            .nav-item.active i { transform: translateY(-3px); text-shadow: 0 0 10px var(--primary-glow); }
+
+            .hero-banner { position: relative; width: 100%; height: 350px; overflow: hidden; }
+            .hero-banner img { width: 100%; height: 100%; object-fit: cover; mask-image: linear-gradient(to top, transparent, black 40%); -webkit-mask-image: linear-gradient(to top, transparent, black 40%); }
+            .hero-content { position: absolute; bottom: 20px; left: 20px; right: 20px; z-index: 10; }
+            .hero-title { font-size: 28px; font-weight: 800; text-shadow: 0 2px 10px rgba(0,0,0,0.8); line-height: 1.2; margin-bottom: 5px; }
+            .hero-genres { font-size: 12px; color: var(--primary); font-weight: 600; margin-bottom: 10px; text-shadow: 0 1px 5px black; }
+            .hero-btn { background: var(--text); color: black; padding: 10px 20px; border-radius: 25px; font-weight: 800; border: none; display: flex; align-items: center; gap: 8px; cursor: pointer; box-shadow: 0 4px 15px rgba(255,255,255,0.2); transition: 0.2s; }
+            .hero-btn:active { transform: scale(0.95); }
+
+            .section-title { padding: 0 20px; font-size: 18px; font-weight: 600; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
+
+            .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; padding: 0 20px; align-items: start; }
+            
+            .h-card { width: 100%; cursor: pointer; background: var(--surface); border-radius: 14px; padding-bottom: 15px; box-shadow: 0 4px 10px rgba(0,0,0,0.2); }
+            
+            .img-wrap { 
+                width: 100%; height: 220px; position: relative; border-radius: 14px 14px 0 0; padding: 3px; 
+                background: linear-gradient(45deg, #00d2ff, #3a7bd5, #f093fb, #f5576c);
+                background-size: 200% 200%; animation: gradientGlow 4s ease infinite;
+            }
+            @keyframes gradientGlow { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
+            
+            .img-wrap img { width: 100%; height: 100%; object-fit: cover; border-radius: 12px 12px 0 0; background: var(--surface-light); display: block; }
+
+            .views-tag { position: absolute; bottom: 8px; left: 8px; background: rgba(0,0,0,0.7); color: white; font-size: 12px; font-weight: bold; padding: 4px 8px; border-radius: 6px; display: flex; align-items: center; gap: 5px; backdrop-filter: blur(4px); }
+            .quality-tag { position: absolute; top: 8px; right: 8px; background: #10b981; color: white; font-size: 11px; font-weight: 800; padding: 4px 8px; border-radius: 6px; display: flex; align-items: center; gap: 5px; box-shadow: 0 2px 5px rgba(0,0,0,0.3); }
+
+            .card-title { font-size: 14px; font-weight: 600; color: var(--text); text-align: center; margin-top: 12px; padding: 0 8px; line-height: 1.4; word-wrap: break-word; }
+
+            .h-scroll { 
+                display: flex; overflow-x: auto; gap: 15px; padding: 0 20px 20px; 
+                scroll-behavior: smooth; align-items: start;
+                scroll-snap-type: x mandatory; 
+            }
+            .h-scroll::-webkit-scrollbar { display: none; }
+            .h-scroll .h-card { 
+                min-width: 140px; width: 140px; 
+                scroll-snap-align: start; 
+            }
+            .h-scroll .img-wrap { height: 190px; }
+
+            .pagination { display: flex; justify-content: center; align-items: center; gap: 8px; margin: 25px 0; padding-bottom: 30px; flex-wrap: wrap; }
+            .page-btn { background: var(--surface); border: 1px solid var(--surface-light); color: var(--text); padding: 8px 14px; border-radius: 8px; font-weight: 600; cursor: pointer; transition: 0.3s; }
+            .page-btn:active { transform: scale(0.9); }
+            .page-btn.active { background: var(--primary); border-color: var(--primary); color: white; box-shadow: 0 0 10px var(--primary-glow); }
+
+            .search-box { margin: 20px; position: relative; }
+            .search-box input { width: 100%; background: var(--surface); border: 1px solid var(--surface-light); padding: 15px 20px 15px 45px; border-radius: 12px; color: white; font-size: 16px; outline: none; transition: 0.3s; }
+            .search-box input:focus { border-color: var(--primary); box-shadow: 0 0 15px var(--primary-glow); }
+            .search-box i { position: absolute; left: 18px; top: 50%; transform: translateY(-50%); color: var(--text-muted); font-size: 18px; }
+            
+            /* RGB Border Animation */
+            @keyframes rgbBorderGlow {
+                0% { border-color: #ff004c; box-shadow: 0 0 15px rgba(255,0,76,0.4); }
+                33% { border-color: #00ff88; box-shadow: 0 0 15px rgba(0,255,136,0.4); }
+                66% { border-color: #00bfff; box-shadow: 0 0 15px rgba(0,191,255,0.4); }
+                100% { border-color: #ff004c; box-shadow: 0 0 15px rgba(255,0,76,0.4); }
+            }
+            .rgb-border {
+                border: 2px solid #ff004c;
+                animation: rgbBorderGlow 4s linear infinite;
+            }
+
+            /* Professional Banner */
+            .request-banner { background: linear-gradient(135deg, var(--surface), #202020); border-radius: 14px; padding: 20px; margin: 0 20px 25px 20px; display: flex; align-items: center; justify-content: space-between; cursor: pointer; transition: transform 0.2s; }
+            .request-banner:active { transform: scale(0.97); }
+            .req-banner-text h3 { color: white; font-weight: 800; font-size: 16px; margin-bottom: 3px; }
+            .req-banner-text p { color: rgba(255,255,255,0.6); font-size: 12px; }
+            .req-banner-icon { font-size: 35px; color: rgba(255,255,255,0.8); }
+
+            .dashboard-card { background: linear-gradient(135deg, var(--surface), #202020); border: 1px solid var(--surface-light); border-radius: 16px; padding: 20px; margin: 20px; display: flex; align-items: center; gap: 15px; position: relative; overflow: hidden; }
+            .dashboard-card::after { content: ''; position:absolute; top:0; right:0; width:100px; height:100px; background:var(--primary-glow); filter:blur(50px); z-index:0; }
+            .profile-pic { width: 60px; height: 60px; border-radius: 50%; border: 2px solid var(--primary); z-index: 1; }
+            .profile-info { z-index: 1; }
+            .vip-badge { display:inline-block; background: linear-gradient(45deg, #f59e0b, #d97706); color:black; font-size:11px; font-weight:800; padding:2px 8px; border-radius:12px; margin-top:5px;}
+            
+            .menu-list { padding: 0 20px; }
+            .menu-item { display: flex; align-items: center; justify-content: space-between; padding: 18px; background: var(--surface); margin-bottom: 10px; border-radius: 12px; font-weight: 600; cursor: pointer; transition: 0.2s; border: 1px solid transparent; }
+            .menu-item:active { transform: scale(0.98); border-color: var(--surface-light); }
+            .menu-item-left { display: flex; align-items: center; gap: 15px; }
+            .menu-item i.icon { font-size: 20px; width: 25px; text-align: center; }
+
+            .modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); backdrop-filter: blur(5px); z-index: 3000; display: none; opacity: 0; transition: opacity 0.3s; }
+            .bottom-sheet { position: fixed; bottom: -100%; left: 0; width: 100%; background: var(--surface); border-radius: 24px 24px 0 0; padding: 25px 20px; z-index: 3001; transition: bottom 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275); display: flex; flex-direction: column; align-items: center; border-top: 1px solid var(--surface-light); max-height: 85vh; overflow-y: auto; }
+            .modal-overlay.show { display: block; opacity: 1; }
+            .modal-overlay.show .bottom-sheet { bottom: 0; }
+            
+            .sheet-handle { width: 40px; height: 5px; background: var(--surface-light); border-radius: 5px; margin: -10px auto 20px; flex-shrink: 0; }
+            .lock-icon-wrap { width: 80px; height: 80px; background: rgba(225, 29, 72, 0.1); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 35px; color: var(--primary); margin-bottom: 15px; }
+            
+            .btn-primary { width: 100%; background: linear-gradient(45deg, var(--primary), #be123c); color: white; border: none; padding: 16px; border-radius: 14px; font-size: 16px; font-weight: 800; cursor: pointer; transition: 0.3s; margin-top: 10px; box-shadow: 0 5px 15px var(--primary-glow); }
+            .btn-outline { width: 100%; background: transparent; color: white; border: 2px solid var(--surface-light); padding: 14px; border-radius: 14px; font-size: 15px; font-weight: bold; cursor: pointer; transition: 0.3s; margin-top: 10px; }
+            .btn-primary:disabled { background: var(--surface-light); color: var(--text-muted); box-shadow: none; }
+            .btn-primary:active:not(:disabled), .btn-outline:active { transform: scale(0.96); }
+
+            .file-list { width: 100%; overflow-y: auto; margin-top: 15px; }
+            .file-item { width: 100%; background: var(--bg); border: 1px solid var(--surface-light); padding: 16px; border-radius: 12px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; font-weight: 600; cursor: pointer; }
+            .file-item:active { border-color: var(--primary); }
+            .file-unlocked { border-left: 4px solid var(--success); }
+            .file-locked { border-left: 4px solid var(--primary); }
+
+            /* Switch Tabs Inside Sheet */
+            .sheet-tabs { display: flex; width: 100%; background: #0f1115; border-radius: 10px; padding: 4px; margin-bottom: 15px; }
+            .sheet-tab { flex: 1; text-align: center; padding: 10px; font-weight: bold; color: var(--text-muted); cursor: pointer; border-radius: 8px; transition: 0.3s; }
+            .sheet-tab.active { background: var(--surface-light); color: white; }
+
+            /* Review System UI */
+            .review-box { width: 100%; background: var(--bg); border: 1px solid var(--surface-light); padding: 15px; border-radius: 12px; margin-bottom: 10px; }
+            .star-rating { color: #facc15; font-size: 16px; }
+            .star-input { display: flex; gap: 10px; font-size: 24px; color: #555; justify-content: center; margin-bottom: 15px; cursor: pointer; }
+            .star-input i:hover, .star-input i.selected { color: #facc15; }
+            
+            .toast-container { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); z-index: 4000; display: flex; flex-direction: column; gap: 10px; width: 90%; max-width: 400px; }
+            .toast { background: var(--surface-light); color: white; padding: 14px 20px; border-radius: 12px; font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 10px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); animation: slideDown 0.3s forwards, fadeOut 0.3s 3s forwards; border-left: 4px solid var(--primary); }
+            @keyframes slideDown { from{ transform: translateY(-50px); opacity:0; } to{ transform: translateY(0); opacity:1; } }
+            @keyframes fadeOut { from{ opacity:1; } to{ opacity:0; } }
+
+            .fab-container { position: fixed; right: 20px; bottom: 90px; display: flex; flex-direction: column; gap: 15px; z-index: 1000; }
+            .fab { width: 45px; height: 45px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 20px; color: white; box-shadow: 0 4px 15px rgba(0,0,0,0.5); cursor: pointer; }
+            .fab-18 { background: linear-gradient(45deg, #000, var(--primary)); border: 1px solid var(--primary); font-size:16px; font-weight:800; }
+            .fab-tg { background: linear-gradient(45deg, #24A1DE, #1b7ba8); }
+        </style>
+    </head>
+    <body>
+
+        <header>
+            <div class="logo">MovieZone <span>Pro</span></div>
+            <div class="header-coins" onclick="switchTab('profile')">
+                <i class="fa-solid fa-coins"></i> <span id="headerCoinCount">0</span>
+            </div>
+        </header>
+
+        <!-- 1. HOME TAB -->
+        <div id="home-tab" class="tab-content active">
+            <div id="heroBanner" class="hero-banner" style="display:none;">
+                <img id="heroImg" src="">
+                <div class="hero-content">
+                    <h1 id="heroTitle" class="hero-title">Loading...</h1>
+                    <div id="heroGenres" class="hero-genres">Action • Thriller</div>
+                    <button class="hero-btn" onclick="playHero()"><i class="fa-solid fa-play"></i> Watch Now</button>
+                </div>
+            </div>
+
+            <div class="category-scroll" id="categoryList">
+                <div class="cat-chip active" onclick="filterGenre('All')">All</div>
+                <div class="cat-chip" onclick="filterGenre('Action')">Action</div>
+                <div class="cat-chip" onclick="filterGenre('Comedy')">Comedy</div>
+                <div class="cat-chip" onclick="filterGenre('Horror')">Horror</div>
+                <div class="cat-chip" onclick="filterGenre('Sci-Fi')">Sci-Fi</div>
+                <div class="cat-chip" onclick="filterGenre('Romance')">Romance</div>
+                <div class="cat-chip" onclick="filterGenre('Thriller')">Thriller</div>
+                <div class="cat-chip" onclick="filterGenre('Animation')">Animation</div>
+            </div>
+
+            <div class="section-title"><span>🔥 Trending Now</span></div>
+            <div class="h-scroll" id="trendingList"></div>
+
+            <div class="section-title" style="margin-top:10px;"><span id="latestTitle">✨ New Releases</span></div>
+            <div class="grid" id="movieGrid"></div>
+            <div class="pagination" id="paginationBox"></div>
+        </div>
+
+        <!-- 2. SEARCH TAB -->
+        <div id="search-tab" class="tab-content">
+            <div class="search-box">
+                <i class="fa-solid fa-magnifying-glass"></i>
+                <input type="text" id="searchInput" placeholder="Search movies, series...">
+            </div>
+            
+            <!-- Beautiful Request Banner with RGB -->
+            <div class="request-banner rgb-border" onclick="openModal('reqModal'); loadRequests();">
+                <div class="req-banner-text">
+                    <h3>মুভি খুঁজে পাচ্ছেন না?</h3>
+                    <p>এখানে ক্লিক করে অ্যাডমিনকে রিকোয়েস্ট করুন!</p>
+                </div>
+                <div class="req-banner-icon">
+                    <i class="fa-solid fa-bullhorn text-red-500"></i>
+                </div>
+            </div>
+
+            <div class="grid" id="searchGrid"></div>
+        </div>
+
+        <!-- 3. MISSIONS & REWARDS TAB -->
+        <div id="missions-tab" class="tab-content">
+            <div class="dashboard-card" style="margin-bottom:10px;">
+                <div class="lock-icon-wrap" style="width:50px; height:50px; font-size:20px; box-shadow:none;"><i class="fa-solid fa-gift text-pink-500"></i></div>
+                <div>
+                    <h3 style="font-size:18px;">Earn Free Coins</h3>
+                    <p style="font-size:12px; color:var(--text-muted); margin-bottom:0;">Collect coins to get VIP Access!</p>
+                </div>
+            </div>
+            <div class="menu-list">
+                <div class="menu-item" onclick="claimCheckin()">
+                    <div class="menu-item-left"><i class="icon fa-solid fa-calendar-check text-green-400"></i> 
+                        <div style="display:flex; flex-direction:column;">
+                            <span>Daily Check-in</span>
+                            <span style="font-size:10px; color:var(--text-muted);" id="streakText">Loading streak...</span>
+                        </div>
+                    </div>
+                    <i class="fa-solid fa-chevron-right text-muted"></i>
+                </div>
+                <div class="menu-item" onclick="openQuiz()">
+                    <div class="menu-item-left"><i class="icon fa-solid fa-gamepad text-purple-400"></i> 
+                        <div style="display:flex; flex-direction:column;">
+                            <span>Guess The Movie Emoji</span>
+                            <span style="font-size:10px; color:var(--text-muted);">Daily Quiz (+10 Coins)</span>
+                        </div>
+                    </div>
+                    <i class="fa-solid fa-chevron-right text-muted"></i>
+                </div>
+                <div class="menu-item" onclick="watchAdForCoins(1)">
+                    <div class="menu-item-left"><i class="icon fa-brands fa-youtube text-red-500"></i> Watch Ad Slot 1 (+5 Coins)</div>
+                    <i class="fa-solid fa-chevron-right text-muted"></i>
+                </div>
+                <div class="menu-item" onclick="watchAdForCoins(2)">
+                    <div class="menu-item-left"><i class="icon fa-brands fa-youtube text-red-400"></i> Watch Ad Slot 2 (+5 Coins)</div>
+                    <i class="fa-solid fa-chevron-right text-muted"></i>
+                </div>
+                <div class="menu-item" onclick="watchAdForCoins(3)">
+                    <div class="menu-item-left"><i class="icon fa-brands fa-youtube text-red-300"></i> Watch Ad Slot 3 (+5 Coins)</div>
+                    <i class="fa-solid fa-chevron-right text-muted"></i>
+                </div>
+            </div>
+        </div>
+
+        <!-- 4. PROFILE TAB -->
+        <div id="profile-tab" class="tab-content">
+            <div class="dashboard-card">
+                <img id="uPic" src="https://cdn-icons-png.flaticon.com/512/3135/3135715.png" class="profile-pic">
+                <div class="profile-info">
+                    <h2 id="uName" style="font-size:20px; font-weight:800;">Loading...</h2>
+                    <div id="vipBadge" class="vip-badge" style="display:none;"><i class="fa-solid fa-crown"></i> VIP Member</div>
+                    <p id="vipExpiryText" style="font-size:11px; color:var(--text-muted); margin-top:3px; display:none;"></p>
+                </div>
+            </div>
+            <div class="menu-list">
+                <div class="menu-item" onclick="openModal('vipModal')">
+                    <div class="menu-item-left"><i class="icon fa-solid fa-crown text-warning"></i> Buy VIP / Remove Ads</div>
+                    <i class="fa-solid fa-chevron-right text-muted"></i>
+                </div>
+                <div class="menu-item" onclick="convertCoins()">
+                    <div class="menu-item-left"><i class="icon fa-solid fa-coins text-yellow-400"></i> Buy VIP with Coins (50)</div>
+                    <i class="fa-solid fa-chevron-right text-muted"></i>
+                </div>
+                <div class="menu-item" onclick="copyReferLink()">
+                    <div class="menu-item-left"><i class="icon fa-solid fa-share-nodes text-blue-400"></i> Invite Friends (<span id="refCountNum">0</span>)</div>
+                    <i class="fa-solid fa-copy text-muted"></i>
+                </div>
+                <div class="menu-item" onclick="openModal('leaderboardModal'); loadLeaderboard();">
+                    <div class="menu-item-left"><i class="icon fa-solid fa-trophy text-yellow-500"></i> Top Referrers</div>
+                    <i class="fa-solid fa-chevron-right text-muted"></i>
+                </div>
+                <div class="menu-item" onclick="openModal('reqModal'); loadRequests();">
+                    <div class="menu-item-left"><i class="icon fa-solid fa-code-pull-request text-green-400"></i> Movie Requests Board</div>
+                    <i class="fa-solid fa-chevron-right text-muted"></i>
+                </div>
+            </div>
+            <p id="refLinkText" style="display:none;"></p>
+        </div>
+
+        <div class="fab-container">
+            <div class="fab fab-18" onclick="window.open('{{LINK_18}}')">18+</div>
+            <div class="fab fab-tg" onclick="window.open('{{TG_LINK}}')"><i class="fa-brands fa-telegram"></i></div>
+        </div>
+
+        <!-- Bottom Navigation Bar -->
+        <nav class="bottom-nav">
+            <a class="nav-item active" onclick="switchTab('home')"><i class="fa-solid fa-house"></i> Home</a>
+            <a class="nav-item" onclick="switchTab('search')"><i class="fa-solid fa-magnifying-glass"></i> Search</a>
+            <a class="nav-item" onclick="switchTab('missions')"><i class="fa-solid fa-gift"></i> VIP/Coins</a>
+            <a class="nav-item" onclick="switchTab('profile')"><i class="fa-solid fa-user"></i> Profile</a>
+        </nav>
+
+        <div id="toastContainer" class="toast-container"></div>
+
+        <!-- MODALS -->
+        <!-- QUALITY & REVIEW SHEET -->
+        <div id="qualitySheet" class="modal-overlay" onclick="if(event.target===this) closeModal('qualitySheet')">
+            <div class="bottom-sheet">
+                <div class="sheet-handle"></div>
+                <h2 id="sheetMovieTitle" style="font-size:20px; font-weight:800; align-self:flex-start; margin-bottom:5px; width:100%; word-wrap:break-word;">Movie Title</h2>
+                
+                <div class="sheet-tabs">
+                    <div class="sheet-tab active" id="tabBtnFiles" onclick="switchSheetTab('files')">📥 Downloads</div>
+                    <div class="sheet-tab" id="tabBtnReviews" onclick="switchSheetTab('reviews')">⭐ Reviews</div>
+                </div>
+
+                <!-- FILES SECTION -->
+                <div id="sheetSectionFiles" style="width:100%;">
+                    <p style="align-self:flex-start; color:var(--text-muted); font-size:13px; margin-bottom:10px;">Select option to get file in bot:</p>
+                    <div id="qualityList" class="file-list"></div>
+                </div>
+
+                <!-- REVIEWS SECTION -->
+                <div id="sheetSectionReviews" style="width:100%; display:none;">
+                    <div style="text-align:center; margin-bottom:15px;">
+                        <h1 style="font-size:35px; font-weight:800; color:#facc15; margin:0;" id="revAvg">0.0</h1>
+                        <div class="star-rating" id="revStars"><i class="fa-solid fa-star text-gray-500"></i></div>
+                        <p style="font-size:12px; color:var(--text-muted);" id="revCount">0 reviews</p>
+                    </div>
+
+                    <div style="background:var(--bg); border:1px solid var(--surface-light); padding:15px; border-radius:12px; margin-bottom:20px;">
+                        <h4 style="margin-bottom:10px; font-size:14px; text-align:center;">Rate this movie</h4>
+                        <div class="star-input" id="starInputBox">
+                            <i class="fa-solid fa-star" onclick="setRating(1)"></i>
+                            <i class="fa-solid fa-star" onclick="setRating(2)"></i>
+                            <i class="fa-solid fa-star" onclick="setRating(3)"></i>
+                            <i class="fa-solid fa-star" onclick="setRating(4)"></i>
+                            <i class="fa-solid fa-star" onclick="setRating(5)"></i>
+                        </div>
+                        <textarea id="revTextInput" placeholder="Write your review here..." style="width:100%; background:var(--surface); border:1px solid var(--surface-light); color:white; padding:10px; border-radius:8px; outline:none; height:60px; margin-bottom:10px;"></textarea>
+                        <button style="width:100%; background:var(--primary); color:white; border:none; padding:10px; border-radius:8px; font-weight:bold; cursor:pointer;" onclick="submitReview()">Submit Review</button>
+                    </div>
+
+                    <div id="reviewsListDiv" style="width:100%; max-height:250px; overflow-y:auto; padding-right:5px;"></div>
+                </div>
+
+                <button class="btn-outline" style="border:none; color:var(--text-muted);" onclick="closeModal('qualitySheet')">Close Window</button>
+            </div>
+        </div>
+
+        <!-- ENHANCED UNLOCK SHEET WITH BENGALI & RGB -->
+        <div id="unlockSheet" class="modal-overlay" onclick="if(event.target===this) closeModal('unlockSheet')">
+            <div class="bottom-sheet">
+                <div class="sheet-handle"></div>
+                <div class="lock-icon-wrap rgb-border" id="lockIcon"><i class="fa-solid fa-lock"></i></div>
+                <h2 style="font-size:24px; font-weight:800; margin-bottom:5px; color:white; text-align:center;">🔒 আনলক করুন</h2>
+                <p style="color:var(--text-muted); font-size:13px; text-align:center; margin-bottom:20px;">মুভিটি ইনবক্সে পেতে নিচের যেকোনো একটি উপায় বেছে নিন:</p>
+                
+                <div style="width:100%; background:var(--bg); border:1px solid var(--surface-light); padding:15px; border-radius:12px; margin-bottom:15px;">
+                    <h3 style="font-size:15px; color:white; font-weight:bold; margin-bottom:5px;"><i class="fa-solid fa-play text-red-500"></i> উপায় ১: অ্যাড দেখুন</h3>
+                    <p style="font-size:11px; color:gray; margin-bottom:10px; line-height:1.4;">লিংকে ক্লিক করে পেজটিতে ঠিক ১০ সেকেন্ড অপেক্ষা করুন। এরপর ফিরে আসলেই আনলক হবে।</p>
+                    <button id="dlClickBtn" class="btn-primary" style="margin-top:0;" onclick="executeDirectLink()">📺 অ্যাড দেখে আনলক করুন</button>
+                </div>
+
+                <div style="font-size:14px; font-weight:bold; color:gray; text-align:center; margin-bottom:15px;">— অথবা —</div>
+                
+                <div style="width:100%; background:var(--bg); border:2px solid transparent; padding:15px; border-radius:12px; position:relative; overflow:hidden;" class="rgb-border">
+                    <h3 style="font-size:15px; color:white; font-weight:bold; margin-bottom:5px;"><i class="fa-solid fa-user-plus text-green-400"></i> উপায় ২: বন্ধুকে শেয়ার (VIP)</h3>
+                    <p style="font-size:11px; color:gray; margin-bottom:10px; line-height:1.4;">মাত্র ১ জন বন্ধুকে আপনার লিংক থেকে বটে জয়েন করালেই পাবেন ১ দিনের ফ্রি VIP! (সব মুভি অটো আনলক)</p>
+                    <button class="btn-outline" style="border-color:var(--success); color:white; background:var(--success); margin-top:0;" onclick="shareToUnlock()"><i class="fa-brands fa-telegram"></i> শেয়ার করে VIP নিন</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- EMOJI QUIZ MODAL -->
+        <div id="quizModal" class="modal-overlay" onclick="if(event.target===this) closeModal('quizModal')">
+            <div class="bottom-sheet">
+                <div class="sheet-handle"></div>
+                <h2 style="font-size:20px; font-weight:800; color:white; margin-bottom:10px;">Guess the Movie!</h2>
+                <p style="color:var(--text-muted); font-size:12px; margin-bottom:20px;">What movie do these emojis represent?</p>
+                
+                <div id="quizEmoji" style="font-size:45px; letter-spacing:5px; margin-bottom:20px; text-align:center; background:var(--bg); padding:15px; border-radius:15px; width:100%;">🕷️👨🕸️</div>
+                
+                <div id="quizOptions" style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; width:100%;">
+                    <!-- Options injected via JS -->
+                </div>
+            </div>
+        </div>
+
+        <div id="vipModal" class="modal-overlay" onclick="if(event.target===this) closeModal('vipModal')">
+            <div class="bottom-sheet" style="max-height:85vh; overflow-y:auto;">
+                <div class="sheet-handle"></div>
+                <h2 style="color:var(--warning); margin-bottom:15px;"><i class="fa-solid fa-crown"></i> Get VIP Access</h2>
+                <div style="display:flex; width:100%; gap:10px; margin-bottom:15px;">
+                    <button style="flex:1; padding:12px; border-radius:10px; background:#e11471; border:none; color:white; font-weight:bold;" onclick="selectPayment('bkash')">bKash</button>
+                    <button style="flex:1; padding:12px; border-radius:10px; background:#f97316; border:none; color:white; font-weight:bold;" onclick="selectPayment('nagad')">Nagad</button>
+                </div>
+                <div id="payBox" style="display:none; width:100%; background:var(--bg); padding:15px; border-radius:12px;">
+                    <div style="margin-bottom:15px;">
+                        <label><input type="radio" name="vip_pkg" value="7" data-price="10" checked> 7 Days - 10 BDT</label><br><br>
+                        <label><input type="radio" name="vip_pkg" value="30" data-price="30"> 30 Days - 30 BDT</label>
+                    </div>
+                    <p style="font-size:13px; color:var(--text-muted);">Send money to:</p>
+                    <h2 id="payNumberText" style="color:var(--success); margin:10px 0; font-size:24px; text-align:center; letter-spacing:2px;">...</h2>
+                    <input type="text" id="trxIdInput" placeholder="Enter TrxID here..." style="width:100%; padding:15px; border-radius:10px; border:1px solid var(--surface-light); background:var(--surface); color:white; margin-bottom:15px; outline:none;">
+                    <button class="btn-primary" onclick="submitPayment()">Verify Payment</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="leaderboardModal" class="modal-overlay" onclick="if(event.target===this) closeModal('leaderboardModal')">
+            <div class="bottom-sheet">
+                <div class="sheet-handle"></div>
+                <h2 style="color:var(--warning);"><i class="fa-solid fa-trophy"></i> Top Referrers</h2>
+                <div id="lbList" style="width:100%; max-height:50vh; overflow-y:auto; margin-top:15px;"></div>
+            </div>
+        </div>
+        
+        <!-- ENHANCED REQUEST MODAL -->
+        <div id="reqModal" class="modal-overlay" onclick="if(event.target===this) closeModal('reqModal')">
+            <div class="bottom-sheet" style="height:85vh; padding-bottom: 20px;">
+                <div class="sheet-handle"></div>
+                <h2 style="font-size:24px; font-weight:800; color:white; margin-bottom:5px;"><i class="fa-solid fa-bullhorn text-red-500"></i> Request Movie</h2>
+                <p style="color:var(--text-muted); font-size:12px; margin-bottom:15px; text-align:center;">Type exact movie name. Admins will review and upload it soon!</p>
+                <div style="display:flex; width:100%; gap:10px; background:var(--bg); padding:10px; border-radius:15px; border:1px solid var(--primary-glow);">
+                    <input type="text" id="reqText" placeholder="Movie Name (e.g., Avatar 2)..." style="flex:1; padding:14px; border-radius:10px; background:transparent; border:none; color:white; outline:none; font-weight:bold; font-size:16px;">
+                    <button onclick="sendReq()" style="background:var(--primary); color:white; border:none; border-radius:10px; padding:0 22px; font-size:18px; cursor:pointer; box-shadow:0 0 10px var(--primary-glow);"><i class="fa-solid fa-paper-plane"></i></button>
+                </div>
+                
+                <h3 style="width:100%; margin-top:25px; margin-bottom:10px; font-size:16px; border-bottom:1px solid var(--surface-light); padding-bottom:5px;">🔥 Pending Community Requests</h3>
+                <div id="reqList" style="width:100%; overflow-y:auto; flex:1; padding-right:5px;"></div>
+            </div>
+        </div>
+
+        <script>
+            let tg = window.Telegram.WebApp; 
+            tg.expand();
+            
+            const DIRECT_LINKS = {{DIRECT_LINKS}};
+            const INIT_DATA = tg.initData || "";
+            const BOT_UNAME = "{{BOT_USER}}";
+            const BKASH_NO = "{{BKASH_NO}}";
+            const NAGAD_NO = "{{NAGAD_NO}}";
+            
+            let uid = tg.initDataUnsafe?.user?.id || 0;
+            let loadedMovies = {}; 
+            let isUserVip = false;
+            let isAdmin = false; 
+            let canQuizPlay = false;
+            let currentGenre = 'All'; 
+            let currentPage = 1;
+            let trendingScrollTimer = null; 
+            let currentlyViewingMovie = "";
+            let currentRating = 5;
+
+            // Quiz Data
+            const quizzes = [
+                {q: "🕷️👨🕸️", opts: ["Spider-Man", "Batman", "Ant-Man", "Iron Man"], ans: "Spider-Man"},
+                {q: "🚢🧊💑", opts: ["Avatar", "Titanic", "Pirates of Caribbean", "Jaws"], ans: "Titanic"},
+                {q: "🦁👑", opts: ["Jungle Book", "Tarzan", "The Lion King", "Madagascar"], ans: "The Lion King"},
+                {q: "🦇🤡🦇", opts: ["Joker", "Batman", "Dracula", "Venom"], ans: "Batman"},
+                {q: "🦖🦕🚙", opts: ["Godzilla", "Jurassic Park", "Transformers", "King Kong"], ans: "Jurassic Park"}
+            ];
+            let currentQuiz = {};
+
+            // 🚀 FUNCTION TO HANDLE BOT-BAN PROOF IMAGES
+            function getImageUrl(photoId) {
+                if (photoId.startsWith('http')) return photoId;
+                return '/api/image/' + photoId;
+            }
+
+            function switchTab(tabId) {
+                document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+                document.getElementById(tabId + '-tab').classList.add('active');
+                event.currentTarget.classList.add('active');
+                if(tabId === 'home') window.scrollTo({ top: 0, behavior: 'smooth' });
+                if(tabId === 'search') document.getElementById('searchInput').focus();
+            }
+
+            function filterGenre(g) {
+                currentGenre = g;
+                currentPage = 1;
+                document.querySelectorAll('.cat-chip').forEach(c => c.classList.remove('active'));
+                event.currentTarget.classList.add('active');
+                document.getElementById('latestTitle').innerText = g === 'All' ? '✨ New Releases' : '✨ ' + g + ' Movies';
+                loadMovies(currentPage);
+            }
+
+            function openModal(id) { document.getElementById(id).classList.add('show'); }
+            function closeModal(id) { document.getElementById(id).classList.remove('show'); }
+
+            function showToast(msg, type = "success") {
+                const container = document.getElementById('toastContainer');
+                const toast = document.createElement('div');
+                toast.className = 'toast';
+                let icon = type === 'success' ? '<i class="fa-solid fa-circle-check" style="color:var(--success); font-size:18px;"></i>' : '<i class="fa-solid fa-circle-exclamation" style="color:var(--warning); font-size:18px;"></i>';
+                if(type === 'error') {
+                    toast.style.borderLeftColor = 'var(--primary)';
+                    icon = '<i class="fa-solid fa-triangle-exclamation" style="color:var(--primary); font-size:18px;"></i>';
+                }
+                toast.innerHTML = `${icon} <span>${msg}</span>`;
+                container.appendChild(toast);
+                setTimeout(() => { if(toast.parentNode) toast.remove(); }, 3500);
+            }
+
+            function formatViews(num) {
+                if (num >= 1000000) return (num / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+                if (num >= 1000) return (num / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
+                return num.toString();
+            }
+
+            async function fetchUserInfo() {
+                if(tg.initDataUnsafe?.user) {
+                    document.getElementById('uName').innerText = tg.initDataUnsafe.user.first_name;
+                    if(tg.initDataUnsafe.user.photo_url) document.getElementById('uPic').src = tg.initDataUnsafe.user.photo_url;
+                }
+                try {
+                    const res = await fetch('/api/user/' + uid);
+                    const data = await res.json();
+                    isUserVip = data.vip;
+                    isAdmin = data.is_admin;
+                    canQuizPlay = data.can_quiz;
+                    
+                    document.getElementById('headerCoinCount').innerText = data.coins;
+                    if(isUserVip) {
+                        document.getElementById('vipBadge').style.display = 'inline-block';
+                        if(data.vip_expiry) {
+                            document.getElementById('vipExpiryText').style.display = 'block';
+                            document.getElementById('vipExpiryText').innerText = 'Valid till: ' + data.vip_expiry;
+                        }
+                    }
+                    document.getElementById('refCountNum').innerText = data.refer_count;
+                    document.getElementById('refLinkText').innerText = `https://t.me/${BOT_UNAME}?start=ref_${uid}`;
+                    
+                    // Setup Streak Text
+                    let streakTextHtml = `Current Streak: ${data.streak} Day(s) 🔥`;
+                    if(!data.can_checkin) streakTextHtml += " (Claimed)";
+                    document.getElementById('streakText').innerText = streakTextHtml;
+                    
+                    loadTrending();
+                    loadMovies(currentPage);
+                } catch(e) {}
+            }
+
+            function startTrendingAutoScroll() {
+                const slider = document.getElementById('trendingList');
+                if(!slider || slider.children.length === 0) return;
+                
+                clearInterval(trendingScrollTimer);
+                trendingScrollTimer = setInterval(() => {
+                    let maxScroll = slider.scrollWidth - slider.clientWidth;
+                    if (slider.scrollLeft >= maxScroll - 10) {
+                        slider.scrollTo({ left: 0, behavior: 'smooth' });
+                    } else {
+                        slider.scrollBy({ left: 155, behavior: 'smooth' });
+                    }
+                }, 3000); 
+            }
+            
+            function stopTrendingAutoScroll() {
+                clearInterval(trendingScrollTimer);
+            }
+
+            async function loadTrending() {
+                try {
+                    const r = await fetch(`/api/trending?uid=${uid}`);
+                    const data = await r.json();
+                    if(data.length === 0) return;
+                    
+                    currentHeroMovie = data[0];
+                    loadedMovies[currentHeroMovie._id] = currentHeroMovie;
+                    document.getElementById('heroBanner').style.display = 'block';
+                    document.getElementById('heroImg').src = getImageUrl(currentHeroMovie.photo_id);
+                    document.getElementById('heroTitle').innerText = currentHeroMovie._id;
+                    
+                    let heroMeta = currentHeroMovie.genres ? currentHeroMovie.genres.join(' • ') : '';
+                    let heroLangHtml = '';
+                    if(currentHeroMovie.language && currentHeroMovie.language !== 'N/A' && currentHeroMovie.language !== 'Not Specified') {
+                        heroLangHtml = `<span style="background: linear-gradient(45deg, var(--primary), #be123c); color: white; padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 800; margin-right: 8px; box-shadow: 0 0 10px var(--primary-glow);"><i class="fa-solid fa-language"></i> ${currentHeroMovie.language}</span>`;
+                    }
+                    document.getElementById('heroGenres').innerHTML = heroLangHtml + heroMeta;
+
+                    const grid = document.getElementById('trendingList');
+                    grid.innerHTML = data.slice(1).map(m => {
+                        loadedMovies[m._id] = m;
+                        let langText = (m.language && m.language !== "N/A" && m.language !== "Not Specified") ? ` ${m.language}` : "";
+                        let fullTitle = `${m._id}${langText}`;
+                        let fileCount = m.files ? m.files.length : 1;
+                        
+                        return `<div class="h-card" onclick="openQualitySheet('${m._id.replace(/'/g, "\\'")}')">
+                            <div class="img-wrap">
+                                <img src="${getImageUrl(m.photo_id)}" loading="lazy">
+                                <div class="views-tag"><i class="fa-solid fa-eye"></i> ${formatViews(m.clicks)}</div>
+                                <div class="quality-tag" style="background:var(--primary);"><i class="fa-solid fa-fire"></i> HOT</div>
+                            </div>
+                            <div class="card-title">${fullTitle}</div>
+                        </div>`;
+                    }).join('');
+                    
+                    grid.addEventListener('touchstart', stopTrendingAutoScroll, {passive: true});
+                    grid.addEventListener('touchend', startTrendingAutoScroll);
+                    grid.addEventListener('mouseenter', stopTrendingAutoScroll);
+                    grid.addEventListener('mouseleave', startTrendingAutoScroll);
+                    
+                    startTrendingAutoScroll(); 
+
+                } catch(e) {}
+            }
+
+            function playHero() { 
+                if(currentHeroMovie) openQualitySheet(currentHeroMovie._id); 
+            }
+
+            function renderPagination(totalPages, currentPage) {
+                if(totalPages <= 1) return "";
+                let html = "";
+                if(currentPage > 1) {
+                    html += `<button class="page-btn" onclick="loadMovies(${currentPage - 1})"><i class="fa-solid fa-chevron-left"></i> Prev</button>`;
+                }
+                let startPage = Math.max(1, currentPage - 1);
+                let endPage = Math.min(totalPages, currentPage + 1);
+                if (startPage > 1) html += `<button class="page-btn" onclick="loadMovies(1)">1</button> ... `;
+                for(let i = startPage; i <= endPage; i++) {
+                    let active = i === currentPage ? "active" : "";
+                    html += `<button class="page-btn ${active}" onclick="loadMovies(${i})">${i}</button>`;
+                }
+                if (endPage < totalPages) html += ` ... <button class="page-btn" onclick="loadMovies(${totalPages})">${totalPages}</button>`;
+                if(currentPage < totalPages) {
+                    html += `<button class="page-btn" onclick="loadMovies(${currentPage + 1})">Next <i class="fa-solid fa-chevron-right"></i></button>`;
+                }
+                return html;
+            }
+
+            async function loadMovies(page = 1) {
+                currentPage = page;
+                const grid = document.getElementById('movieGrid');
+                grid.innerHTML = "<p style='color:var(--text-muted); text-align:center; width:100%; grid-column:span 2;'><i class='fa-solid fa-spinner fa-spin'></i> Loading...</p>";
+
+                try {
+                    const r = await fetch(`/api/list?page=${page}&uid=${uid}&genre=${currentGenre}`);
+                    const data = await r.json();
+                    
+                    if(data.movies.length===0) {
+                        grid.innerHTML = "<p style='color:var(--text-muted); text-align:center; width:100%; grid-column:span 2;'>No movies found in this category.</p>";
+                        document.getElementById('paginationBox').innerHTML = "";
+                        return;
+                    }
+                    
+                    grid.innerHTML = data.movies.map(m => {
+                        loadedMovies[m._id] = m;
+                        let langText = (m.language && m.language !== "N/A" && m.language !== "Not Specified") ? ` ${m.language}` : "";
+                        let fullTitle = `${m._id}${langText}`;
+                        let fileCount = m.files ? m.files.length : 1;
+
+                        return `<div class="h-card" onclick="openQualitySheet('${m._id.replace(/'/g, "\\'")}')">
+                            <div class="img-wrap">
+                                <img src="${getImageUrl(m.photo_id)}" loading="lazy">
+                                <div class="views-tag"><i class="fa-solid fa-eye"></i> ${formatViews(m.clicks)}</div>
+                                <div class="quality-tag"><i class="fa-solid fa-list"></i> ${fileCount}</div>
+                            </div>
+                            <div class="card-title">${fullTitle}</div>
+                        </div>`;
+                    }).join('');
+                    
+                    document.getElementById('paginationBox').innerHTML = renderPagination(data.total_pages, currentPage);
+                    
+                    if(page > 1) {
+                        document.getElementById('latestTitle').scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    }
+
+                } catch(e) {
+                     grid.innerHTML = "<p style='color:var(--primary); text-align:center; width:100%; grid-column:span 2;'>Failed to load movies.</p>";
+                }
+            }
+
+            let searchTimeout;
+            document.getElementById('searchInput').addEventListener('input', (e) => {
+                clearTimeout(searchTimeout);
+                const q = e.target.value.trim();
+                if(q === "") return document.getElementById('searchGrid').innerHTML = "";
+                searchTimeout = setTimeout(async () => {
+                    const grid = document.getElementById('searchGrid');
+                    grid.innerHTML = "<p style='color:var(--text-muted); text-align:center; width:100%; grid-column:span 2;'>Searching...</p>";
+                    try {
+                        const r = await fetch(`/api/list?page=1&q=${encodeURIComponent(q)}&uid=${uid}&genre=All`);
+                        const data = await r.json();
+                        if(data.movies.length===0) return grid.innerHTML = "<p style='color:var(--text-muted); text-align:center; width:100%; grid-column:span 2;'>No movies found.</p>";
+                        
+                        grid.innerHTML = data.movies.map(m => {
+                            loadedMovies[m._id] = m;
+                            let langText = (m.language && m.language !== "N/A" && m.language !== "Not Specified") ? ` ${m.language}` : "";
+                            let fullTitle = `${m._id}${langText}`;
+                            let fileCount = m.files ? m.files.length : 1;
+
+                            return `<div class="h-card" onclick="openQualitySheet('${m._id.replace(/'/g, "\\'")}')">
+                                <div class="img-wrap">
+                                    <img src="${getImageUrl(m.photo_id)}" loading="lazy">
+                                    <div class="views-tag"><i class="fa-solid fa-eye"></i> ${formatViews(m.clicks)}</div>
+                                    <div class="quality-tag"><i class="fa-solid fa-list"></i> ${fileCount}</div>
+                                </div>
+                                <div class="card-title">${fullTitle}</div>
+                            </div>`;
+                        }).join('');
+                    } catch(e) {}
+                }, 500);
+            });
+
+            // --- MOVIE DETAILS / REVIEW SHEET ---
+            function switchSheetTab(tab) {
+                document.getElementById('tabBtnFiles').classList.remove('active');
+                document.getElementById('tabBtnReviews').classList.remove('active');
+                document.getElementById('sheetSectionFiles').style.display = 'none';
+                document.getElementById('sheetSectionReviews').style.display = 'none';
+                
+                if(tab === 'files') {
+                    document.getElementById('tabBtnFiles').classList.add('active');
+                    document.getElementById('sheetSectionFiles').style.display = 'block';
+                } else {
+                    document.getElementById('tabBtnReviews').classList.add('active');
+                    document.getElementById('sheetSectionReviews').style.display = 'block';
+                    loadReviews(currentlyViewingMovie);
+                }
+            }
+
+            function setRating(val) {
+                currentRating = val;
+                const stars = document.getElementById('starInputBox').children;
+                for(let i=0; i<5; i++) {
+                    if(i < val) stars[i].style.color = "#facc15";
+                    else stars[i].style.color = "#555";
+                }
+            }
+
+            async function submitReview() {
+                const txt = document.getElementById('revTextInput').value.trim();
+                const uname = document.getElementById('uName').innerText || "User";
+                try {
+                    const res = await fetch('/api/review', { 
+                        method: 'POST', headers: {'Content-Type': 'application/json'}, 
+                        body: JSON.stringify({uid: uid, uname: uname, movie: currentlyViewingMovie, rating: currentRating, text: txt, initData: INIT_DATA})
+                    });
+                    const data = await res.json();
+                    if(data.ok) {
+                        showToast("✅ Review submitted!");
+                        document.getElementById('revTextInput').value = '';
+                        loadReviews(currentlyViewingMovie);
+                    }
+                } catch(e) {}
+            }
+
+            async function loadReviews(movieTitle) {
+                const div = document.getElementById('reviewsListDiv');
+                div.innerHTML = '<p style="text-align:center; color:gray;">Loading reviews...</p>';
+                try {
+                    const res = await fetch('/api/reviews?movie=' + encodeURIComponent(movieTitle));
+                    const data = await res.json();
+                    
+                    document.getElementById('revAvg').innerText = data.average;
+                    document.getElementById('revCount').innerText = `${data.count} reviews`;
+                    
+                    let starHtml = '';
+                    let fullStars = Math.floor(data.average);
+                    for(let i=0; i<5; i++) {
+                        if(i < fullStars) starHtml += '<i class="fa-solid fa-star"></i>';
+                        else starHtml += '<i class="fa-solid fa-star text-gray-500"></i>';
+                    }
+                    document.getElementById('revStars').innerHTML = starHtml;
+
+                    if(data.reviews.length === 0) {
+                        div.innerHTML = '<p style="text-align:center; color:gray; font-size:13px; margin-top:20px;">No reviews yet. Be the first!</p>';
+                        return;
+                    }
+
+                    div.innerHTML = data.reviews.map(r => {
+                        let rStars = '';
+                        for(let i=0; i<5; i++) { rStars += (i < r.rating) ? '<i class="fa-solid fa-star" style="color:#facc15; font-size:10px;"></i>' : '<i class="fa-solid fa-star" style="color:#555; font-size:10px;"></i>'; }
+                        
+                        let delBtn = isAdmin ? `<button onclick="deleteReview('${r.id}')" style="background:transparent; border:none; color:var(--primary); cursor:pointer;"><i class="fa-solid fa-trash"></i></button>` : '';
+
+                        return `
+                        <div class="review-box">
+                            <div style="display:flex; justify-content:space-between; margin-bottom:5px;">
+                                <div style="font-weight:bold; font-size:13px;"><i class="fa-solid fa-user-circle text-gray-400"></i> ${r.uname}</div>
+                                <div>${rStars} ${delBtn}</div>
+                            </div>
+                            <div style="font-size:13px; color:var(--text-muted);">${r.text}</div>
+                        </div>`;
+                    }).join('');
+                } catch(e) {}
+            }
+
+            async function deleteReview(id) {
+                if(!confirm("Delete this review?")) return;
+                try {
+                    await fetch('/api/review/' + id, { method: 'DELETE' });
+                    loadReviews(currentlyViewingMovie);
+                } catch(e) {}
+            }
+
+            let activeFileId = null; 
+            let onAdCompleteCallback = null;
+            let adStartTime = 0;
+            let isWaitingForAd = false;
+            let adFallbackTimer = null;
+
+            function openQualitySheet(title) {
+                const movie = loadedMovies[title];
+                if(!movie) return;
+                
+                currentlyViewingMovie = title;
+                switchSheetTab('files'); // Default tab
+
+                document.getElementById('sheetMovieTitle').innerText = title;
+                let listHtml = movie.files.map(f => {
+                    let isFree = f.is_unlocked || isUserVip;
+                    let icon = isFree ? '<i class="fa-solid fa-cloud-arrow-down" style="color:var(--success);"></i>' : '<i class="fa-solid fa-lock" style="color:var(--primary);"></i>';
+                    let cls = isFree ? 'file-unlocked' : 'file-locked';
+                    let btnText = `📥 ${f.quality} ডাউনলোড`;
+                    
+                    return `<div class="file-item ${cls}" onclick="handleQualityClick('${f.id}', ${f.is_unlocked})">
+                        <span>${btnText}</span> ${icon}
+                    </div>`;
+                }).join('');
+                
+                document.getElementById('qualityList').innerHTML = listHtml;
+                setRating(5); // Reset rating input
+                openModal('qualitySheet');
+            }
+
+            function handleQualityClick(fileId, isUnlocked) {
+                closeModal('qualitySheet');
+                if(isUnlocked || isUserVip) { 
+                    sendFile(fileId); 
+                } else { 
+                    activeFileId = fileId; 
+                    onAdCompleteCallback = () => sendFile(activeFileId);
+                    
+                    const btn = document.getElementById('dlClickBtn');
+                    btn.disabled = false;
+                    btn.innerText = '📺 অ্যাড দেখে আনলক করুন';
+                    btn.style.background = "linear-gradient(45deg, var(--primary), #be123c)";
+                    
+                    openModal('unlockSheet');
+                }
+            }
+
+            function executeDirectLink() {
+                if (!DIRECT_LINKS || DIRECT_LINKS.length === 0) {
+                    closeModal('unlockSheet');
+                    if (onAdCompleteCallback) onAdCompleteCallback();
+                    return;
+                }
+                let linkIndex = parseInt(localStorage.getItem('dl_index') || '0');
+                if (linkIndex >= DIRECT_LINKS.length) linkIndex = 0;
+                const selectedLink = DIRECT_LINKS[linkIndex];
+                localStorage.setItem('dl_index', linkIndex + 1);
+
+                try { tg.openLink(selectedLink); } 
+                catch(e) { window.open(selectedLink, '_blank'); }
+
+                const btn = document.getElementById('dlClickBtn');
+                btn.disabled = true;
+                btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> লিংক চেক করা হচ্ছে...`;
+                btn.style.background = "var(--surface-light)";
+
+                adStartTime = Date.now();
+                isWaitingForAd = true;
+
+                clearTimeout(adFallbackTimer);
+                adFallbackTimer = setTimeout(() => {
+                    if (isWaitingForAd) {
+                        let timeSpent = (Date.now() - adStartTime) / 1000;
+                        if (timeSpent >= 10) {
+                            unlockSuccess();
+                        }
+                    }
+                }, 12000);
+            }
+
+            function handleReturnFromAd() {
+                if (!isWaitingForAd) return;
+                
+                let timeSpent = (Date.now() - adStartTime) / 1000;
+                if (timeSpent < 10) {
+                    isWaitingForAd = false;
+                    clearTimeout(adFallbackTimer);
+                    showToast("⚠️ আপনি লিংকে ১০ সেকেন্ড অপেক্ষা করেননি! আবার চেষ্টা করুন।", "error");
+                    const btn = document.getElementById('dlClickBtn');
+                    btn.disabled = false;
+                    btn.innerText = '📺 আবার চেষ্টা করুন';
+                    btn.style.background = "linear-gradient(45deg, var(--primary), #be123c)";
+                } else {
+                    unlockSuccess();
+                }
+            }
+
+            function unlockSuccess() {
+                isWaitingForAd = false;
+                clearTimeout(adFallbackTimer);
+                
+                const btn = document.getElementById('dlClickBtn');
+                btn.innerHTML = '<i class="fa-solid fa-check"></i> আনলক সফল!';
+                btn.style.background = "var(--success)";
+                
+                setTimeout(() => {
+                    closeModal('unlockSheet');
+                    if (onAdCompleteCallback) onAdCompleteCallback();
+                }, 1000);
+            }
+            
+            function shareToUnlock() {
+                let shareUrl = `https://t.me/share/url?url=https://t.me/${BOT_UNAME}?start=ref_${uid}&text=🔥%20Download%20Movies%20Directly!`;
+                try { tg.openTelegramLink(shareUrl); } catch(e) { window.open(shareUrl, '_blank'); }
+                showToast("১ জন বন্ধুকে জয়েন করালেই ১ দিন VIP ফ্রি পাবেন! সব মুভি আনলক হয়ে যাবে।", "success");
+            }
+
+            document.addEventListener("visibilitychange", () => {
+                if (document.visibilityState === 'visible') {
+                    setTimeout(handleReturnFromAd, 500);
+                }
+            });
+
+            window.addEventListener("focus", () => {
+                setTimeout(handleReturnFromAd, 500);
+            });
+
+            async function sendFile(id) {
+                showToast("⏳ Sending to bot inbox...", "success");
+                try {
+                    const res = await fetch('/api/send', { 
+                        method: 'POST', headers: {'Content-Type': 'application/json'}, 
+                        body: JSON.stringify({userId: uid, movieId: id, initData: INIT_DATA})
+                    });
+                    const responseData = await res.json();
+                    if(!responseData.ok) {
+                        if(responseData.msg === "Too fast") return showToast("Please wait 5 seconds!", "error");
+                        return showToast("Verification failed!", "error");
+                    }
+                    
+                    showToast("✅ Successfully sent to your inbox!");
+                    setTimeout(() => tg.close(), 2500);
+                } catch (e) { showToast("Network Error", "error"); }
+            }
+
+            // Streak System
+            async function claimCheckin() {
+                try {
+                    const res = await fetch('/api/checkin', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({uid: uid, action: "claim", initData: INIT_DATA}) });
+                    const data = await res.json();
+                    if(data.ok) { 
+                        let msg = `🎉 +${data.coins} Coins added! (Day ${data.streak})`;
+                        if(data.got_vip) msg += " + 1 Day VIP Free!";
+                        showToast(msg); 
+                        fetchUserInfo(); 
+                    }
+                    else showToast(data.msg || "Already claimed today!", "warning");
+                } catch(e) {}
+            }
+            
+            function watchAdForCoins(slot) {
+                let lastWatched = localStorage.getItem(`adSlot_${slot}_${new Date().toDateString()}`);
+                if(lastWatched) return showToast("You already used this slot today!", "warning");
+
+                onAdCompleteCallback = async () => {
+                    const res = await fetch('/api/reward_ad', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({uid: uid, initData: INIT_DATA})});
+                    if((await res.json()).ok) { 
+                        localStorage.setItem(`adSlot_${slot}_${new Date().toDateString()}`, "done");
+                        showToast("🎉 +5 Coins earned!"); 
+                        fetchUserInfo(); 
+                    }
+                };
+                
+                // Set the unlock sheet temporarily to "Ad Watching Mode"
+                document.getElementById('dlClickBtn').disabled = false;
+                document.getElementById('dlClickBtn').innerText = '📺 অ্যাড দেখে কয়েন নিন';
+                document.getElementById('dlClickBtn').style.background = "linear-gradient(45deg, var(--primary), #be123c)";
+                openModal('unlockSheet');
+            }
+            
+            // Emoji Quiz logic
+            function openQuiz() {
+                if(!canQuizPlay) return showToast("You already played today! Come back tomorrow.", "warning");
+                currentQuiz = quizzes[Math.floor(Math.random() * quizzes.length)];
+                document.getElementById('quizEmoji').innerText = currentQuiz.q;
+                
+                let optsHtml = currentQuiz.opts.map(o => `<button class="btn-outline" style="margin-top:0; border-color:var(--surface-light); font-size:14px; padding:10px;" onclick="submitQuiz('${o}')">${o}</button>`).join('');
+                document.getElementById('quizOptions').innerHTML = optsHtml;
+                
+                openModal('quizModal');
+            }
+            
+            async function submitQuiz(answer) {
+                if(answer !== currentQuiz.ans) {
+                    return showToast("❌ Wrong Answer! Try another option.", "error");
+                }
+                closeModal('quizModal');
+                try {
+                    const res = await fetch('/api/quiz_reward', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({uid: uid, initData: INIT_DATA}) });
+                    const data = await res.json();
+                    if(data.ok) {
+                        showToast("🎉 Correct! +10 Coins added.");
+                        fetchUserInfo();
+                    }
+                } catch(e){}
+            }
+
+            async function convertCoins() {
+                try {
+                    const res = await fetch('/api/checkin', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({uid: uid, action: "convert", initData: INIT_DATA}) });
+                    const data = await res.json();
+                    if(data.ok) { showToast("✅ VIP activated successfully!"); fetchUserInfo(); }
+                    else showToast(data.msg || "Not enough coins! (50 required)", "error");
+                } catch(e) {}
+            }
+
+            function copyReferLink() {
+                navigator.clipboard.writeText(document.getElementById('refLinkText').innerText).then(() => { showToast("✅ Invite Link Copied!"); });
+            }
+
+            let selectedPayMethod = "";
+            function selectPayment(method) {
+                selectedPayMethod = method;
+                document.getElementById('payBox').style.display = 'block';
+                document.getElementById('payNumberText').innerText = method === 'bkash' ? BKASH_NO : NAGAD_NO;
+            }
+            
+            async function submitPayment() {
+                const trxId = document.getElementById('trxIdInput').value.trim();
+                if(trxId.length < 5) return showToast("Enter a valid TrxID!", "error");
+                let selectedRadio = document.querySelector('input[name="vip_pkg"]:checked');
+                try {
+                    const res = await fetch('/api/payment/submit', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({uid: uid, method: selectedPayMethod, trx_id: trxId, days: parseInt(selectedRadio.value), price: parseInt(selectedRadio.getAttribute('data-price')), initData: INIT_DATA}) });
+                    const data = await res.json();
+                    if(data.ok) { showToast("✅ Request sent! Admin will verify soon."); closeModal('vipModal'); } 
+                    else { showToast(data.msg, "error"); }
+                } catch(e) {}
+            }
+
+            async function loadLeaderboard() {
+                const lbList = document.getElementById('lbList');
+                lbList.innerHTML = "<p style='color:var(--text-muted); text-align:center;'>Loading...</p>";
+                try {
+                    const res = await fetch('/api/leaderboard');
+                    const data = await res.json();
+                    if(data.length===0) return lbList.innerHTML = "<p style='color:var(--text-muted); text-align:center;'>No data found.</p>";
+                    lbList.innerHTML = data.map((u, i) => `
+                        <div style="display:flex; justify-content:space-between; padding:15px; background:var(--surface-light); margin-bottom:8px; border-radius:10px;">
+                            <div><span style="color:var(--warning); font-weight:800; margin-right:10px;">#${i+1}</span> <b>${u.name}</b></div>
+                            <span style="color:var(--success); font-weight:800;"><i class="fa-solid fa-users"></i> ${u.refers}</span>
+                        </div>
+                    `).join('');
+                } catch(e) {}
+            }
+
+            async function loadRequests() {
+                const reqList = document.getElementById('reqList');
+                reqList.innerHTML = "<p style='color:var(--text-muted); text-align:center; padding-top:20px;'><i class='fa-solid fa-spinner fa-spin'></i> Fetching requests...</p>";
+                try {
+                    const res = await fetch('/api/requests');
+                    const data = await res.json();
+                    if(data.length === 0) return reqList.innerHTML = "<p style='color:var(--text-muted); text-align:center; padding-top:20px;'>No requests found.</p>";
+                    
+                    reqList.innerHTML = data.map(r => {
+                        let hasVoted = r.voters.includes(uid);
+                        let btnStyle = hasVoted ? "background:var(--surface-light); color:var(--text-muted);" : "background:var(--primary); color:white;";
+                        let delBtn = isAdmin ? `<button onclick="deleteReq('${r.id}')" style="background:transparent; border:none; color:var(--primary); cursor:pointer; padding:5px; font-size:16px; margin-left:10px;"><i class="fa-solid fa-trash"></i></button>` : '';
+                        
+                        return `
+                        <div style="background:var(--surface); border:1px solid var(--surface-light); padding:15px; border-radius:14px; margin-bottom:12px; display:flex; justify-content:space-between; align-items:center; border-left: 4px solid var(--primary);">
+                            <div style="flex:1; overflow:hidden;">
+                                <div style="font-size:11px; color:var(--warning); font-weight:800; margin-bottom:5px; display:flex; align-items:center; gap:5px;"><i class="fa-solid fa-user-astronaut"></i> ${r.uname}</div>
+                                <div style="font-size:15px; font-weight:800; color:white; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${r.movie}</div>
+                            </div>
+                            <div style="display:flex; align-items:center;">
+                                <button onclick="voteRequest('${r.id}')" style="${btnStyle} border:none; padding:8px 15px; border-radius:10px; font-weight:bold; font-size:14px; cursor:pointer; box-shadow:0 2px 5px rgba(0,0,0,0.2);" ${hasVoted?'disabled':''}>
+                                    <i class="fa-solid fa-caret-up"></i> ${r.votes}
+                                </button>
+                                ${delBtn}
+                            </div>
+                        </div>
+                        `;
+                    }).join('');
+                } catch(e) {}
+            }
+
+            async function sendReq() {
+                const text = document.getElementById('reqText').value.trim();
+                if(!text) return showToast("Enter movie name!", "warning");
+                
+                const uname = document.getElementById('uName').innerText || "User";
+                
+                try {
+                    const res = await fetch('/api/request', { 
+                        method: 'POST', headers: {'Content-Type': 'application/json'}, 
+                        body: JSON.stringify({uid: uid, uname: uname, movie: text, initData: INIT_DATA})
+                    });
+                    const data = await res.json();
+                    if(data.ok) {
+                        document.getElementById('reqText').value = '';
+                        showToast("✅ Request submitted!");
+                        loadRequests();
+                    }
+                } catch (e) { showToast("Error submitting request", "error"); }
+            }
+
+            async function voteRequest(id) {
+                try {
+                    await fetch('/api/requests/vote', { 
+                        method: 'POST', headers: {'Content-Type': 'application/json'}, 
+                        body: JSON.stringify({uid: uid, req_id: id, initData: INIT_DATA})
+                    });
+                    loadRequests();
+                } catch (e) {}
+            }
+            
+            async function deleteReq(id) {
+                if(!confirm('Are you sure you want to delete this request?')) return;
+                try {
+                    await fetch('/api/requests/' + id, { method: 'DELETE' });
+                    showToast("🗑️ Request deleted");
+                    loadRequests();
+                } catch(e) {}
+            }
+
+            fetchUserInfo(); 
+        </script>
+    </body>
+    </html>
+    """
+    html_code = html_code.replace("{{DIRECT_LINKS}}", dl_json).replace("{{ZONE_ID}}", zone_id).replace("{{TG_LINK}}", tg_url).replace("{{LINK_18}}", link_18).replace("{{BOT_USER}}", BOT_USERNAME).replace("{{BKASH_NO}}", bkash_no).replace("{{NAGAD_NO}}", nagad_no)
+    return html_code
+
+# ==========================================
+# Remaining Python Backend APIs 
+# ==========================================
+@app.get("/api/user/{uid}")
+async def get_user_info(uid: int):
+    user = await db.users.find_one({"user_id": uid})
+    if not user: return {"vip": False, "is_admin": False, "refer_count": 0, "vip_expiry": None, "coins": 0, "streak": 0, "can_checkin": False, "can_quiz": False}
+    
+    vip_until = user.get("vip_until")
+    now = datetime.datetime.utcnow()
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    
+    is_vip = False
+    vip_expiry_str = None
+    if vip_until and vip_until > now:
+        is_vip = True
+        vip_expiry_str = vip_until.strftime("%d %b %Y")
+        
+    last_checkin = user.get("last_checkin", now - datetime.timedelta(days=2))
+    can_checkin = last_checkin < today_start
+    last_quiz = user.get("last_quiz", now - datetime.timedelta(days=2))
+    can_quiz = last_quiz < today_start
+    
+    return {"vip": is_vip, "is_admin": uid in admin_cache, "refer_count": user.get("refer_count", 0), "vip_expiry": vip_expiry_str, "coins": user.get("coins", 0), "streak": user.get("streak", 0), "can_checkin": can_checkin, "can_quiz": can_quiz}
+
+class CheckinModel(BaseModel):
+    uid: int
+    action: str
+    initData: str
+
+@app.post("/api/checkin")
+async def handle_checkin(data: CheckinModel):
+    if not validate_tg_data(data.initData): return {"ok": False}
+    user = await db.users.find_one({"user_id": data.uid})
+    if not user: return {"ok": False}
+    
+    now = datetime.datetime.utcnow()
+    yesterday_start = (now - datetime.timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    
+    if data.action == "claim":
+        last_checkin = user.get("last_checkin", now - datetime.timedelta(days=2))
+        streak = user.get("streak", 0)
+        
+        if last_checkin >= today_start:
+            return {"ok": False, "msg": "Already claimed today!"}
+            
+        if last_checkin >= yesterday_start: streak += 1
+        else: streak = 1
+        
+        coins_to_give = 10
+        if streak == 2: coins_to_give = 15
+        elif streak == 3: coins_to_give = 20
+        elif streak == 4: coins_to_give = 25
+        elif streak == 5: coins_to_give = 30
+        elif streak == 6: coins_to_give = 40
+        elif streak >= 7: coins_to_give = 50
+
+        update_data = {"$inc": {"coins": coins_to_give}, "$set": {"last_checkin": now, "streak": streak}}
+        
+        got_vip = False
+        if streak % 7 == 0:
+            got_vip = True
+            current_vip = max(user.get("vip_until", now), now)
+            update_data["$set"]["vip_until"] = current_vip + datetime.timedelta(days=1)
+            
+        await db.users.update_one({"user_id": data.uid}, update_data)
+        return {"ok": True, "coins": coins_to_give, "streak": streak, "got_vip": got_vip}
+        
+    elif data.action == "convert":
+        coins = user.get("coins", 0)
+        if coins < 50: return {"ok": False, "msg": "Not enough coins! (50 required)"}
+        current_vip = max(user.get("vip_until", now), now)
+        await db.users.update_one({"user_id": data.uid}, {"$inc": {"coins": -50}, "$set": {"vip_until": current_vip + datetime.timedelta(days=1)}})
+        return {"ok": True}
+
+class QuizModel(BaseModel):
+    uid: int; initData: str
+
+@app.post("/api/quiz_reward")
+async def quiz_reward(data: QuizModel):
+    if not validate_tg_data(data.initData): return {"ok": False}
+    user = await db.users.find_one({"user_id": data.uid})
+    now = datetime.datetime.utcnow()
+    last_quiz = user.get("last_quiz", now - datetime.timedelta(days=2))
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if last_quiz >= today_start:
+        return {"ok": False, "msg": "Already played today!"}
+    await db.users.update_one({"user_id": data.uid}, {"$inc": {"coins": 10}, "$set": {"last_quiz": now}})
+    return {"ok": True}
+
+class PaymentModel(BaseModel):
+    uid: int; method: str; trx_id: str; days: int; price: int; initData: str
+
+@app.post("/api/payment/submit")
+async def submit_payment(data: PaymentModel):
+    if not validate_tg_data(data.initData): return {"ok": False}
+    existing = await db.payments.find_one({"trx_id": data.trx_id})
+    if existing: return {"ok": False, "msg": "TrxID already used!"}
+    
+    res = await db.payments.insert_one({
+        "user_id": data.uid, "method": data.method, "trx_id": data.trx_id, "amount": data.price,
+        "days": data.days, "status": "pending", "created_at": datetime.datetime.utcnow()
+    })
+    
+    try:
+        builder = InlineKeyboardBuilder()
+        builder.button(text="✅ Approve", callback_data=f"trx_approve_{res.inserted_id}")
+        builder.button(text="❌ Reject", callback_data=f"trx_reject_{res.inserted_id}")
+        for ad_id in admin_cache:
+            try: await bot.send_message(ad_id, f"💰 <b>New Payment Request!</b>\n\n👤 User: <code>{data.uid}</code>\n🏦 Method: {data.method.upper()}\n🧾 TrxID: <code>{data.trx_id}</code>\n💵 Amount: {data.price} BDT\n⏳ Package: {data.days} Days", parse_mode="HTML", reply_markup=builder.as_markup())
+            except Exception: pass
+    except Exception: pass
+    return {"ok": True}
+
+@app.get("/api/trending")
+async def trending_movies(uid: int = 0):
+    if uid in banned_cache: return {"error": "banned"}
+    
+    unlock_cfg = await db.settings.find_one({"id": "unlock_duration"})
+    unlock_hours = unlock_cfg["hours"] if unlock_cfg else 24
+    
+    unlocked_movie_ids = []
+    if uid != 0:
+        async for u in db.user_unlocks.find({"user_id": uid, "unlocked_at": {"$gt": datetime.datetime.utcnow() - datetime.timedelta(hours=unlock_hours)}}): 
+            unlocked_movie_ids.append(u["movie_id"])
+
+    now_ts = time.time()
+    if now_ts - CACHE_DATA["trending"]["time"] < CACHE_TTL and CACHE_DATA["trending"]["data"]:
+        raw_movies = copy.deepcopy(CACHE_DATA["trending"]["data"])
+    else:
+        pipeline = [{"$group": {"_id": "$title", "photo_id": {"$first": "$photo_id"}, "genres": {"$first": "$genres"}, "language": {"$first": "$movie_lang"}, "clicks": {"$sum": "$clicks"}, "files": {"$push": {"id": {"$toString": "$_id"}, "quality": {"$ifNull": ["$quality", "Main File"]}}}}}, {"$sort": {"clicks": -1}}, {"$limit": 10}]
+        raw_movies = await db.movies.aggregate(pipeline).to_list(10)
+        CACHE_DATA["trending"] = {"time": now_ts, "data": copy.deepcopy(raw_movies)}
+
+    for m in raw_movies:
+        for f in m["files"]: f["is_unlocked"] = f["id"] in unlocked_movie_ids
+    return raw_movies
+
+@app.get("/api/list")
+async def list_movies(page: int = 1, q: str = "", uid: int = 0, genre: str = "All"):
+    if uid in banned_cache: return {"error": "banned"}
+    limit = 16
+    skip = (page - 1) * limit
+    
+    unlock_cfg = await db.settings.find_one({"id": "unlock_duration"})
+    unlock_hours = unlock_cfg["hours"] if unlock_cfg else 24
+    
+    unlocked_ids = []
+    if uid != 0:
+        async for u in db.user_unlocks.find({"user_id": uid, "unlocked_at": {"$gt": datetime.datetime.utcnow() - datetime.timedelta(hours=unlock_hours)}}): 
+            unlocked_ids.append(u["movie_id"])
+
+    cache_key = f"{page}_{q}_{genre}"
+    now_ts = time.time()
+    
+    if cache_key in CACHE_DATA["list"] and (now_ts - CACHE_DATA["list"][cache_key]["time"]) < CACHE_TTL:
+        raw_movies = copy.deepcopy(CACHE_DATA["list"][cache_key]["data"])
+        total_pages = CACHE_DATA["list"][cache_key]["total_pages"]
+    else:
+        match_stage = {"title": {"$regex": q, "$options": "i"}} if q else {}
+        if genre and genre != "All": match_stage["genres"] = genre
+
+        pipeline = [{"$match": match_stage}, {"$group": {"_id": "$title", "photo_id": {"$first": "$photo_id"}, "genres": {"$first": "$genres"}, "language": {"$first": "$movie_lang"}, "clicks": {"$sum": "$clicks"}, "created_at": {"$max": "$created_at"}, "files": {"$push": {"id": {"$toString": "$_id"}, "quality": {"$ifNull": ["$quality", "Main File"]}}}}}, {"$sort": {"created_at": -1}}, {"$skip": skip}, {"$limit": limit}]
+        
+        c_res = await db.movies.aggregate([{"$match": match_stage}, {"$group": {"_id": "$title"}}, {"$count": "total"}]).to_list(1)
+        total_pages = (c_res[0]["total"] + limit - 1) // limit if c_res else 0
+
+        raw_movies = await db.movies.aggregate(pipeline).to_list(limit)
+        CACHE_DATA["list"][cache_key] = {"time": now_ts, "data": copy.deepcopy(raw_movies), "total_pages": total_pages}
+
+    for m in raw_movies:
+        for f in m["files"]: f["is_unlocked"] = f["id"] in unlocked_ids
+    return {"movies": raw_movies, "total_pages": total_pages}
+
+@app.get("/api/image/{photo_id}")
+async def get_image(photo_id: str):
+    try:
+        cache = await db.file_cache.find_one({"photo_id": photo_id})
+        now = datetime.datetime.utcnow()
+        if cache and cache.get("expires_at", now) > now: file_path = cache["file_path"]
+        else:
+            file_info = await bot.get_file(photo_id)
+            file_path = file_info.file_path
+            await db.file_cache.update_one({"photo_id": photo_id}, {"$set": {"file_path": file_path, "expires_at": now + datetime.timedelta(minutes=50)}}, upsert=True)
+            
+        file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_path}"
+        async def stream_image():
+            async with aiohttp.ClientSession() as session:
+                async with session.get(file_url) as resp:
+                    async for chunk in resp.content.iter_chunked(1024): yield chunk
+        return StreamingResponse(stream_image(), media_type="image/jpeg")
+    except Exception: return {"error": "not found"}
+
+class SendRequestModel(BaseModel):
+    userId: int; movieId: str; initData: str
+
+@app.post("/api/send")
+async def send_file(d: SendRequestModel):
+    if d.userId == 0 or d.userId in banned_cache or not validate_tg_data(d.initData): return {"ok": False}
+    
+    now_ts = time.time()
+    if d.userId in USER_REQUEST_RATES and (now_ts - USER_REQUEST_RATES[d.userId]) < 5:
+        return {"ok": False, "msg": "Too fast"}
+    USER_REQUEST_RATES[d.userId] = now_ts
+    
+    try:
+        m = await db.movies.find_one({"_id": ObjectId(d.movieId)})
+        if m:
+            now = datetime.datetime.utcnow()
+            user_data = await db.users.find_one({"user_id": d.userId})
+            is_vip = False
+            if user_data and user_data.get("vip_until", now) > now: is_vip = True
+
+            time_cfg = await db.settings.find_one({"id": "del_time"})
+            del_minutes = time_cfg['minutes'] if time_cfg else 60
+            protect_cfg = await db.settings.find_one({"id": "protect_content"})
+            is_protected = protect_cfg['status'] if protect_cfg else True
+            q_text = m.get("quality", "")
+            title_text = f"{m['title']} [{q_text}]" if q_text else m['title']
+            
+            caption = f"🎥 <b>{title_text}</b>\n\n🌟 <b>VIP Access:</b> File permanently saved." if is_vip else f"🎥 <b>{title_text}</b>\n\n⏳ <b>Warning:</b> File will auto-delete in {del_minutes} minutes."
+            
+            if m.get("file_type") == "video": sent_msg = await bot.send_video(d.userId, m['file_id'], caption=caption, parse_mode="HTML", protect_content=is_protected)
+            else: sent_msg = await bot.send_document(d.userId, m['file_id'], caption=caption, parse_mode="HTML", protect_content=is_protected)
+            
+            await db.movies.update_one({"_id": ObjectId(d.movieId)}, {"$inc": {"clicks": 1}})
+            await db.user_unlocks.update_one({"user_id": d.userId, "movie_id": d.movieId}, {"$set": {"unlocked_at": now}}, upsert=True)
+            
+            if sent_msg and not is_vip:
+                delete_at = now + datetime.timedelta(minutes=del_minutes)
+                await db.auto_delete.insert_one({"chat_id": d.userId, "message_id": sent_msg.message_id, "delete_at": delete_at})
+    except Exception: pass
+    return {"ok": True}
+
+class AdRewardModel(BaseModel):
+    uid: int; initData: str
+
+@app.post("/api/reward_ad")
+async def reward_ad(data: AdRewardModel):
+    if not validate_tg_data(data.initData): return {"ok": False}
+    await db.users.update_one({"user_id": data.uid}, {"$inc": {"coins": 5}})
+    return {"ok": True}
+
+@app.get("/api/leaderboard")
+async def get_leaderboard():
+    users = await db.users.find().sort("refer_count", -1).limit(10).to_list(10)
+    return [{"name": u.get("first_name", "User"), "refers": u.get("refer_count", 0)} for u in users]
+
+@app.get("/api/requests")
+async def get_requests():
+    reqs = await db.requests.find().sort("votes", -1).limit(20).to_list(20)
+    return [{"id": str(r["_id"]), "movie": r["movie"], "uname": r.get("uname", "User"), "votes": r.get("votes", 1), "voters": r.get("voters", [])} for r in reqs]
+
+class ReqModel(BaseModel):
+    uid: int; uname: str; movie: str; initData: str
+
+@app.post("/api/request")
+async def handle_request(data: ReqModel):
+    if data.uid in banned_cache or not validate_tg_data(data.initData): return {"ok": False}
+    existing = await db.requests.find_one({"movie": {"$regex": f"^{data.movie}$", "$options": "i"}})
+    if existing:
+        if data.uid not in existing.get("voters", []):
+            await db.requests.update_one({"_id": existing["_id"]}, {"$inc": {"votes": 1}, "$push": {"voters": data.uid}})
+    else:
+        res = await db.requests.insert_one({
+            "user_id": data.uid, "uname": data.uname, "movie": data.movie,
+            "votes": 1, "voters": [data.uid], "created_at": datetime.datetime.utcnow()
+        })
+        req_id = str(res.inserted_id)
+        try: 
+            user_data = await db.users.find_one({"user_id": data.uid})
+            now = datetime.datetime.utcnow()
+            is_vip = False
+            if user_data and user_data.get("vip_until", now) > now: is_vip = True
+            vip_text = "🌟 <b>[VIP Member]</b>" if is_vip else "👤 [Free User]"
+            
+            builder = InlineKeyboardBuilder()
+            builder.button(text="✅ Approve", callback_data=f"req_acc_{req_id}")
+            builder.button(text="❌ Reject", callback_data=f"req_rej_{req_id}")
+            builder.button(text="✍️ রিপ্লাই", callback_data=f"reply_{data.uid}")
+            for ad_id in admin_cache:
+                try: await bot.send_message(ad_id, f"🔔 <b>নতুন মুভি রিকোয়েস্ট!</b>\n\n{vip_text}\nইউজার: {data.uname} (<code>{data.uid}</code>)\n🎬 মুভির নাম: <b>{data.movie}</b>", parse_mode="HTML", reply_markup=builder.as_markup())
+                except Exception: pass
+        except Exception: pass
+    return {"ok": True}
+
+class VoteModel(BaseModel):
+    uid: int; req_id: str; initData: str
+
+@app.post("/api/requests/vote")
+async def vote_request(data: VoteModel):
+    if not validate_tg_data(data.initData): return {"ok": False}
+    req = await db.requests.find_one({"_id": ObjectId(data.req_id)})
+    if not req: return {"ok": False}
+    if data.uid in req.get("voters", []): return {"ok": False, "msg": "Already voted"}
+    await db.requests.update_one({"_id": ObjectId(data.req_id)}, {"$inc": {"votes": 1}, "$push": {"voters": data.uid}})
+    return {"ok": True}
+
+@app.delete("/api/requests/{req_id}")
+async def delete_request(req_id: str):
+    await db.requests.delete_one({"_id": ObjectId(req_id)})
+    return {"ok": True}
+
+# ==========================================
+# Start Server
+# ==========================================
+async def start():
+    await init_db()
+    await load_admins()
+    await load_banned_users()
+    port = int(os.getenv("PORT", 8000))
+    config = uvicorn.Config(app, host="0.0.0.0", port=port, loop="asyncio")
+    server = uvicorn.Server(config)
+    asyncio.create_task(auto_delete_worker())
+    await bot.delete_webhook(drop_pending_updates=True)
+    await asyncio.gather(server.serve(), dp.start_polling(bot))
+
+if __name__ == "__main__": 
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(start())
