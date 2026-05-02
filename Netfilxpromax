@@ -10,6 +10,7 @@ import urllib.parse
 import secrets
 import json
 import copy
+import re  # New import for TMDB/IMDB link parsing
 
 try:
     asyncio.get_running_loop()
@@ -142,10 +143,22 @@ async def auto_delete_worker():
     while True:
         try:
             now = datetime.datetime.utcnow()
+            
+            # --- MEMORY LEAK FIX: Clear old user request rates ---
+            now_ts = time.time()
+            expired_rates = [u for u, t in USER_REQUEST_RATES.items() if now_ts - t > 10]
+            for u in expired_rates:
+                del USER_REQUEST_RATES[u]
+            
+            # --- AUTO DELETE OPTIMIZATION ---
             expired_msgs = db.auto_delete.find({"delete_at": {"$lte": now}})
             async for msg in expired_msgs:
-                try: await bot.delete_message(chat_id=msg["chat_id"], message_id=msg["message_id"])
-                except Exception: pass
+                try: 
+                    await bot.delete_message(chat_id=msg["chat_id"], message_id=msg["message_id"])
+                except Exception: 
+                    pass # Ignore if user blocked bot or message deleted
+                
+                # Delete from DB to prevent infinite loops even if API fails
                 await db.auto_delete.delete_one({"_id": msg["_id"]})
         except Exception: pass
         await asyncio.sleep(60)
@@ -306,22 +319,81 @@ async def choose_upload_method(c: types.CallbackQuery, state: FSMContext):
         if not TMDB_API_KEY:
             return await c.answer("⚠️ TMDB API Key কনফিগার করা নেই! Manual আপলোড ব্যবহার করুন।", show_alert=True)
         await state.set_state(AdvancedUpload.waiting_for_tmdb_query)
-        await c.message.edit_text("🔍 <b>মুভি বা সিরিজের নাম লিখে পাঠান:</b>\n<i>(যেকোনো ভাষায়)</i>", parse_mode="HTML")
+        await c.message.edit_text("🔍 <b>মুভি বা সিরিজের নাম অথবা TMDB/IMDB লিংক লিখে পাঠান:</b>\n<i>(যেকোনো ভাষায়)</i>", parse_mode="HTML")
     else:
         await state.set_state(AdvancedUpload.waiting_for_manual_photo)
         await c.message.edit_text("🖼 <b>প্রথমে মুভির একটি সুন্দর পোস্টার (Photo) সেন্ড করুন:</b>", parse_mode="HTML")
 
+# --- Helper for TMDB ---
+async def fetch_and_send_tmdb_details(m: types.Message, tmdb_id: str, media_type: str, state: FSMContext, user_id: int):
+    url = f"https://api.tmdb.org/3/{media_type}/{tmdb_id}?api_key={TMDB_API_KEY}"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            if resp.status == 200:
+                res = await resp.json()
+                title = res.get("title") or res.get("name")
+                
+                release_date = res.get("release_date") or res.get("first_air_date") or ""
+                year = release_date[:4] if release_date else ""
+                if year:
+                    title = f"{title} ({year})"
+                
+                poster_path = res.get("poster_path")
+                genres = [g["name"] for g in res.get("genres", [])]
+                
+                if not poster_path:
+                    return await m.answer("⚠️ এই মুভির কোনো পোস্টার নেই! ম্যানুয়াল আপলোড ব্যবহার করুন।")
+                
+                poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}"
+                try:
+                    await bot.send_photo(chat_id=user_id, photo=poster_url, caption=f"✅ <b>{title}</b>\nক্যাটাগরি: {', '.join(genres)}")
+                    await state.update_data(title=title, photo_id=poster_url, genres=genres)
+                    await state.set_state(AdvancedUpload.waiting_for_language)
+                    await bot.send_message(user_id, "🗣 <b>এই মুভিটির ভাষা (Language) সিলেক্ট করুন:</b>", reply_markup=get_language_keyboard(), parse_mode="HTML")
+                except Exception as e:
+                    await bot.send_message(user_id, "⚠️ পোস্টার ডাউনলোড করতে সমস্যা হচ্ছে। ম্যানুয়াল আপলোড ব্যবহার করুন।")
+            else:
+                await bot.send_message(user_id, "⚠️ TMDB থেকে ডাটা আনতে সমস্যা হয়েছে!")
+
 @dp.message(AdvancedUpload.waiting_for_tmdb_query)
 async def process_tmdb_query(m: types.Message, state: FSMContext):
     query = m.text.strip()
-    url = f"https://api.tmdb.org/3/search/multi?api_key={TMDB_API_KEY}&query={urllib.parse.quote(query)}"
     
+    # --- ADDED: Support for TMDB / IMDB links ---
+    tmdb_match = re.search(r'themoviedb\.org/(movie|tv)/(\d+)', query)
+    imdb_match = re.search(r'tt\d+', query)
+    
+    if tmdb_match:
+        media_type = tmdb_match.group(1)
+        tmdb_id = tmdb_match.group(2)
+        await fetch_and_send_tmdb_details(m, tmdb_id, media_type, state, m.from_user.id)
+        return
+        
     async with aiohttp.ClientSession() as session:
+        if imdb_match:
+            imdb_id = imdb_match.group(0)
+            url = f"https://api.tmdb.org/3/find/{imdb_id}?api_key={TMDB_API_KEY}&external_source=imdb_id"
+            async with session.get(url) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    movie_res = data.get("movie_results", [])
+                    tv_res = data.get("tv_results", [])
+                    if movie_res:
+                        await fetch_and_send_tmdb_details(m, movie_res[0]["id"], "movie", state, m.from_user.id)
+                        return
+                    elif tv_res:
+                        await fetch_and_send_tmdb_details(m, tv_res[0]["id"], "tv", state, m.from_user.id)
+                        return
+                    else:
+                        return await m.answer("⚠️ IMDB আইডি দিয়ে TMDB তে কিছু পাওয়া যায়নি!")
+        
+        # Normal Text Search
+        url = f"https://api.tmdb.org/3/search/multi?api_key={TMDB_API_KEY}&query={urllib.parse.quote(query)}"
         async with session.get(url) as resp:
             if resp.status == 200:
                 data = await resp.json()
                 results = data.get("results", [])
-                if not results: return await m.answer("⚠️ TMDB তে কিছু পাওয়া যায়নি! অন্য নাম দিয়ে ট্রাই করুন।")
+                if not results: return await m.answer("⚠️ TMDB তে কিছু পাওয়া যায়নি! অন্য নাম বা লিংক দিয়ে ট্রাই করুন।")
                 
                 builder = InlineKeyboardBuilder()
                 for res in results[:5]:
@@ -339,33 +411,7 @@ async def process_tmdb_selection(c: types.CallbackQuery, state: FSMContext):
     await c.answer()
     _, tmdb_id, media_type = c.data.split("_")
     await c.message.edit_text("⏳ ডাটা লোড হচ্ছে...")
-    
-    url = f"https://api.tmdb.org/3/{media_type}/{tmdb_id}?api_key={TMDB_API_KEY}"
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as resp:
-            if resp.status == 200:
-                res = await resp.json()
-                title = res.get("title") or res.get("name")
-                
-                release_date = res.get("release_date") or res.get("first_air_date") or ""
-                year = release_date[:4] if release_date else ""
-                if year:
-                    title = f"{title} ({year})"
-                
-                poster_path = res.get("poster_path")
-                genres = [g["name"] for g in res.get("genres", [])]
-                
-                if not poster_path:
-                    return await c.message.edit_text("⚠️ এই মুভির কোনো পোস্টার নেই! ম্যানুয়াল আপলোড ব্যবহার করুন।")
-                
-                poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}"
-                try:
-                    await bot.send_photo(chat_id=c.from_user.id, photo=poster_url, caption=f"✅ <b>{title}</b>\nক্যাটাগরি: {', '.join(genres)}")
-                    await state.update_data(title=title, photo_id=poster_url, genres=genres)
-                    await state.set_state(AdvancedUpload.waiting_for_language)
-                    await c.message.answer("🗣 <b>এই মুভিটির ভাষা (Language) সিলেক্ট করুন:</b>", reply_markup=get_language_keyboard(), parse_mode="HTML")
-                except Exception as e:
-                    await c.message.answer("⚠️ পোস্টার ডাউনলোড করতে সমস্যা হচ্ছে। ম্যানুয়াল আপলোড ব্যবহার করুন।")
+    await fetch_and_send_tmdb_details(c.message, tmdb_id, media_type, state, c.from_user.id)
 
 @dp.message(AdvancedUpload.waiting_for_manual_photo, F.photo)
 async def process_manual_photo(m: types.Message, state: FSMContext):
@@ -834,19 +880,36 @@ async def broadcast_prep(m: types.Message, state: FSMContext):
     await state.set_state(AdminStates.waiting_for_bcast)
     await m.answer("📢 যে মেসেজটি ব্রডকাস্ট করতে চান সেটি পাঠান।\nবাতিল করতে /start দিন।")
 
+# --- BROADCAST SYSTEM OPTIMIZED ---
 @dp.message(AdminStates.waiting_for_bcast)
 async def execute_broadcast(m: types.Message, state: FSMContext):
     await state.clear()
-    await m.answer("⏳ ব্রডকাস্ট শুরু হয়েছে...")
+    msg = await m.answer("⏳ ব্রডকাস্ট শুরু হয়েছে... ദয়া করে অপেক্ষা করুন।")
     kb = [[types.InlineKeyboardButton(text="🎬 ওপেন মুভি অ্যাপ", web_app=types.WebAppInfo(url=APP_URL))]]
+    markup = types.InlineKeyboardMarkup(inline_keyboard=kb)
+    
     success = 0
-    async for u in db.users.find():
+    failed = 0
+    cursor = db.users.find()
+    users = await cursor.to_list(length=None)
+    
+    async def send_msg(user_id):
         try:
-            await m.copy_to(chat_id=u['user_id'], reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb))
-            success += 1
-            await asyncio.sleep(0.05)
-        except Exception: pass
-    await m.answer(f"✅ সম্পন্ন! সর্বমোট <b>{success}</b> জনকে মেসেজ পাঠানো হয়েছে।", parse_mode="HTML")
+            await m.copy_to(chat_id=user_id, reply_markup=markup)
+            return True
+        except Exception: 
+            return False
+
+    batch_size = 30
+    for i in range(0, len(users), batch_size):
+        batch = users[i:i+batch_size]
+        tasks = [send_msg(u['user_id']) for u in batch]
+        results = await asyncio.gather(*tasks)
+        success += sum(1 for r in results if r)
+        failed += sum(1 for r in results if not r)
+        await asyncio.sleep(1) # Rate limit protection
+
+    await msg.edit_text(f"✅ ব্রডকাস্ট সম্পন্ন!\n\nসর্বমোট পাঠানো হয়েছে: <b>{success}</b> জনকে।\nব্যর্থ হয়েছে: <b>{failed}</b> জনকে।", parse_mode="HTML")
 
 @dp.callback_query(F.data.startswith("reply_"))
 async def process_reply_cb(c: types.CallbackQuery, state: FSMContext):
@@ -1361,9 +1424,15 @@ async def post_review(data: ReviewPostModel):
         })
     return {"ok": True}
 
+# --- ADDED: SECURITY FIX FOR DELETE REVIEW ---
 @app.delete("/api/review/{rev_id}")
-async def delete_review(rev_id: str):
-    # Called by frontend when isAdmin is true
+async def delete_review(rev_id: str, initData: str):
+    if not validate_tg_data(initData): return {"ok": False}
+    parsed = dict(urllib.parse.parse_qsl(initData))
+    try:
+        user_data = json.loads(parsed.get('user', '{}'))
+        if user_data.get('id') not in admin_cache: return {"ok": False}
+    except: return {"ok": False}
     await db.reviews.delete_one({"_id": ObjectId(rev_id)})
     return {"ok": True}
 
@@ -1529,6 +1598,20 @@ async def web_ui():
             .file-item:active { border-color: var(--primary); }
             .file-unlocked { border-left: 4px solid var(--success); }
             .file-locked { border-left: 4px solid var(--primary); }
+
+            /* --- ADDED: RGB Animation for Download Button --- */
+            @keyframes rgbButtonGlow {
+                0% { box-shadow: 0 0 10px #ff004c, inset 0 0 5px #ff004c; border-color: #ff004c; }
+                33% { box-shadow: 0 0 10px #00ff88, inset 0 0 5px #00ff88; border-color: #00ff88; }
+                66% { box-shadow: 0 0 10px #00bfff, inset 0 0 5px #00bfff; border-color: #00bfff; }
+                100% { box-shadow: 0 0 10px #ff004c, inset 0 0 5px #ff004c; border-color: #ff004c; }
+            }
+            .rgb-button {
+                border: 2px solid #ff004c;
+                animation: rgbButtonGlow 3s infinite linear;
+                transition: transform 0.2s;
+            }
+            .rgb-button:active { transform: scale(0.96); }
 
             /* Switch Tabs Inside Sheet */
             .sheet-tabs { display: flex; width: 100%; background: #0f1115; border-radius: 10px; padding: 4px; margin-bottom: 15px; }
@@ -2193,10 +2276,11 @@ async def web_ui():
                 } catch(e) {}
             }
 
+            // --- ADDED: SECURITY UPDATE FOR DELETE ---
             async function deleteReview(id) {
                 if(!confirm("Delete this review?")) return;
                 try {
-                    await fetch('/api/review/' + id, { method: 'DELETE' });
+                    await fetch('/api/review/' + id + '?initData=' + encodeURIComponent(INIT_DATA), { method: 'DELETE' });
                     loadReviews(currentlyViewingMovie);
                 } catch(e) {}
             }
@@ -2218,8 +2302,11 @@ async def web_ui():
                 let listHtml = movie.files.map(f => {
                     let isFree = f.is_unlocked || isUserVip;
                     let icon = isFree ? '<i class="fa-solid fa-cloud-arrow-down" style="color:var(--success);"></i>' : '<i class="fa-solid fa-lock" style="color:var(--primary);"></i>';
-                    let cls = isFree ? 'file-unlocked' : 'file-locked';
-                    let btnText = `📥 ${f.quality} ডাউনলোড`;
+                    
+                    // --- ADDED: RGB CLASS & ENGLISH TEXT FOR DOWNLOAD BUTTON ---
+                    let rgbClass = isFree ? "rgb-button" : "";
+                    let cls = isFree ? `file-unlocked ${rgbClass}` : 'file-locked';
+                    let btnText = `📥 Download ${f.quality}`;
                     
                     return `<div class="file-item ${cls}" onclick="handleQualityClick('${f.id}', ${f.is_unlocked})">
                         <span>${btnText}</span> ${icon}
@@ -2517,10 +2604,11 @@ async def web_ui():
                 } catch (e) {}
             }
             
+            // --- ADDED: SECURITY UPDATE FOR DELETE ---
             async function deleteReq(id) {
                 if(!confirm('Are you sure you want to delete this request?')) return;
                 try {
-                    await fetch('/api/requests/' + id, { method: 'DELETE' });
+                    await fetch('/api/requests/' + id + '?initData=' + encodeURIComponent(INIT_DATA), { method: 'DELETE' });
                     showToast("🗑️ Request deleted");
                     loadRequests();
                 } catch(e) {}
@@ -2833,8 +2921,15 @@ async def vote_request(data: VoteModel):
     await db.requests.update_one({"_id": ObjectId(data.req_id)}, {"$inc": {"votes": 1}, "$push": {"voters": data.uid}})
     return {"ok": True}
 
+# --- ADDED: SECURITY FIX FOR DELETE REQUEST ---
 @app.delete("/api/requests/{req_id}")
-async def delete_request(req_id: str):
+async def delete_request(req_id: str, initData: str):
+    if not validate_tg_data(initData): return {"ok": False}
+    parsed = dict(urllib.parse.parse_qsl(initData))
+    try:
+        user_data = json.loads(parsed.get('user', '{}'))
+        if user_data.get('id') not in admin_cache: return {"ok": False}
+    except: return {"ok": False}
     await db.requests.delete_one({"_id": ObjectId(req_id)})
     return {"ok": True}
 
