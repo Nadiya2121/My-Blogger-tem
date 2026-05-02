@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MovieZone Super Admin</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body { background: #0f1115; color: #f4f4f5; font-family: sans-serif; }
+        .glass-panel { background: rgba(26, 29, 36, 0.95); border: 1px solid #252933; border-radius: 16px; padding: 20px; }
+        .nav-btn { padding: 12px 20px; border-radius: 12px; font-weight: bold; color: #a1a1aa; cursor: pointer; transition: 0.3s; display: flex; align-items: center; gap: 10px; }
+        .nav-btn:hover { background: #252933; color: white; }
+        .nav-btn.active { background: #e11d48; color: white; box-shadow: 0 0 15px rgba(225, 29, 72, 0.4); }
+        .tab-section { display: none; animation: fadeIn 0.3s ease; }
+        .tab-section.active { display: block; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        input, select { background: #1a1d24; border: 1px solid #252933; color: white; padding: 12px; border-radius: 8px; width: 100%; outline: none; }
+        input:focus { border-color: #e11d48; }
+        .btn-action { background: #10b981; color: white; padding: 10px 15px; border-radius: 8px; font-weight: bold; cursor: pointer; border: none; }
+        .btn-danger { background: #ef4444; color: white; padding: 10px 15px; border-radius: 8px; font-weight: bold; cursor: pointer; border: none; }
+        .btn-edit { background: #3b82f6; color: white; padding: 8px 12px; border-radius: 8px; font-weight: bold; cursor: pointer; border: none; }
+        .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.8); backdrop-filter: blur(5px); }
+        .modal-content { background-color: #1a1d24; margin: 5% auto; padding: 25px; border: 1px solid #252933; border-radius: 16px; width: 80%; max-width: 600px; color: white; }
+        .close { color: #aaa; float: right; font-size: 28px; font-weight: bold; cursor: pointer; }
+        .close:hover { color: white; }
+        .file-list-admin { max-height: 250px; overflow-y: auto; background: #0f1115; padding: 10px; border-radius: 8px; margin-top: 15px; }
+        .file-item-admin { display: flex; justify-content: space-between; padding: 10px; border-bottom: 1px solid #252933; align-items: center; }
+    </style>
+</head>
+<body class="flex h-screen overflow-hidden">
+    
+    <div class="w-64 glass-panel m-4 flex flex-col gap-4">
+        <h1 class="text-2xl font-extrabold text-red-500 text-center mb-6 border-b border-gray-700 pb-4"><i class="fa-solid fa-shield-halved"></i> Super Admin</h1>
+        <div class="nav-btn active" onclick="switchTab('dashboard', this)"><i class="fa-solid fa-chart-line"></i> Dashboard</div>
+        <div class="nav-btn" onclick="switchTab('settings', this)"><i class="fa-solid fa-gear"></i> App Settings</div>
+        <div class="nav-btn" onclick="switchTab('users', this)"><i class="fa-solid fa-users-gear"></i> User Control</div>
+    </div>
+
+    <div class="flex-1 overflow-y-auto p-4 pl-0">
+        <!-- Dashboard Tab -->
+        <div id="dashboard" class="tab-section active">
+            <div class="grid grid-cols-3 gap-6 mb-6">
+                <div class="glass-panel text-center"><h3 class="text-gray-400 text-sm font-bold">TOTAL USERS</h3><p class="text-4xl font-bold text-green-400 mt-2" id="statUsers">0</p></div>
+                <div class="glass-panel text-center"><h3 class="text-gray-400 text-sm font-bold">TOTAL MOVIES</h3><p class="text-4xl font-bold text-blue-400 mt-2" id="statMovies">0</p></div>
+                <div class="glass-panel text-center"><h3 class="text-gray-400 text-sm font-bold">NEW USERS TODAY</h3><p class="text-4xl font-bold text-yellow-400 mt-2" id="statNew">0</p></div>
+            </div>
+
+            <div class="glass-panel">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-bold text-gray-200"><i class="fa-solid fa-film text-red-400"></i> Manage Movies</h2>
+                    <input type="text" id="adminSearch" placeholder="Search movie to edit/delete..." class="w-1/3" onkeyup="filterAdminMovies()">
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-sm whitespace-nowrap">
+                        <thead class="bg-gray-800 text-gray-300">
+                            <tr>
+                                <th class="p-4 rounded-tl-lg">Movie / Series Title</th>
+                                <th class="p-4">Total Views</th>
+                                <th class="p-4">Files</th>
+                                <th class="p-4 rounded-tr-lg text-right">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="movieTableBody"><tr><td colspan="4" class="text-center p-8">Loading data...</td></tr></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Settings Tab -->
+        <div id="settings" class="tab-section">
+            <div class="grid grid-cols-2 gap-6">
+                <div class="glass-panel">
+                    <h2 class="text-xl font-bold text-gray-200 mb-6"><i class="fa-solid fa-sliders text-blue-400"></i> App Configurations</h2>
+                    <div class="mb-4">
+                        <label class="text-gray-400 text-sm font-bold">bKash Number</label>
+                        <div class="flex gap-2 mt-1"><input type="text" id="setBkash"><button class="btn-action" onclick="saveSetting('bkash')">Save</button></div>
+                    </div>
+                    <div class="mb-4">
+                        <label class="text-gray-400 text-sm font-bold">Nagad Number</label>
+                        <div class="flex gap-2 mt-1"><input type="text" id="setNagad"><button class="btn-action" onclick="saveSetting('nagad')">Save</button></div>
+                    </div>
+                    <div class="mb-4">
+                        <label class="text-gray-400 text-sm font-bold">Telegram Floating Link</label>
+                        <div class="flex gap-2 mt-1"><input type="text" id="setTgLink" placeholder="https://t.me/yourchannel"><button class="btn-action" onclick="saveSetting('tg_link')">Save</button></div>
+                    </div>
+                    <div class="mb-4">
+                        <label class="text-gray-400 text-sm font-bold">18+ Floating Link</label>
+                        <div class="flex gap-2 mt-1"><input type="text" id="set18Link" placeholder="https://t.me/your18channel"><button class="btn-action" onclick="saveSetting('link_18')">Save</button></div>
+                    </div>
+                    <div class="mb-4">
+                        <label class="text-gray-400 text-sm font-bold">Auto-Delete Time (Minutes)</label>
+                        <div class="flex gap-2 mt-1"><input type="number" id="setDelTime"><button class="btn-action" onclick="saveSetting('time')">Save</button></div>
+                    </div>
+                    <div class="mb-4 border-t border-gray-700 pt-4 mt-4">
+                        <label class="text-green-400 text-sm font-bold"><i class="fa-solid fa-clock"></i> Movie Unlock Duration (Hours)</label>
+                        <p class="text-xs text-gray-400 mb-1">How long a movie stays unlocked after watching an ad.</p>
+                        <div class="flex gap-2 mt-1"><input type="number" id="setUnlockTime" placeholder="e.g. 24"><button class="btn-action" onclick="saveSetting('unlock_time')">Save</button></div>
+                    </div>
+                </div>
+
+                <div class="glass-panel">
+                    <h2 class="text-xl font-bold text-gray-200 mb-6"><i class="fa-solid fa-link text-yellow-400"></i> Direct Links Manager</h2>
+                    <div class="flex gap-2 mb-6">
+                        <input type="url" id="newLink" placeholder="https://ad-link.com">
+                        <button class="btn-action" onclick="addLink()"><i class="fa-solid fa-plus"></i> Add</button>
+                    </div>
+                    <div id="linksContainer" class="flex flex-col gap-2 max-h-64 overflow-y-auto"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- User Control Tab -->
+        <div id="users" class="tab-section">
+            <div class="glass-panel max-w-xl mx-auto mt-10">
+                <h2 class="text-xl font-bold text-gray-200 mb-6 text-center"><i class="fa-solid fa-user-shield text-purple-400"></i> User Access Control</h2>
+                <div class="mb-4">
+                    <label class="text-gray-400 text-sm font-bold">Telegram User ID</label>
+                    <input type="number" id="ctrlUserId" placeholder="e.g. 123456789" class="mt-1">
+                </div>
+                <div class="grid grid-cols-2 gap-4 mt-6">
+                    <button class="btn-action bg-green-600" onclick="userAction('vip')"><i class="fa-solid fa-crown"></i> Give VIP (30 Days)</button>
+                    <button class="btn-danger" onclick="userAction('ban')"><i class="fa-solid fa-ban"></i> Ban User</button>
+                    <button class="btn-action bg-blue-600 col-span-2" onclick="userAction('unban')"><i class="fa-solid fa-check"></i> Unban User</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Edit Movie Modal -->
+    <div id="editModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeEditModal()">&times;</span>
+            <h2 class="text-2xl font-bold mb-4 text-blue-400"><i class="fa-solid fa-pen-to-square"></i> Edit Movie</h2>
+            
+            <label class="text-gray-400 text-sm font-bold">Movie Name</label>
+            <div class="flex gap-2 mt-1 mb-4">
+                <input type="text" id="editMovieTitle">
+                <button class="btn-action" onclick="saveMovieRename()"><i class="fa-solid fa-save"></i> Save Name</button>
+            </div>
+            
+            <h3 class="text-lg font-bold mt-4 text-gray-300 border-b border-gray-700 pb-2">Movie Files/Qualities</h3>
+            <div id="editFileList" class="file-list-admin"></div>
+        </div>
+    </div>
+
+    <script>
+        let allMovies = [];
+        let currentEditingMovie = "";
+        
+        function switchTab(tabId, btn) {
+            document.querySelectorAll('.tab-section').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+            document.getElementById(tabId).classList.add('active');
+            btn.classList.add('active');
+            if(tabId === 'settings') loadSettings();
+        }
+
+        async function loadDashboardData() {
+            try {
+                const res = await fetch('/api/admin/data');
+                const data = await res.json();
+                document.getElementById('statUsers').innerText = data.total_users;
+                document.getElementById('statMovies').innerText = data.total_groups;
+                document.getElementById('statNew').innerText = data.new_users_today;
+                allMovies = data.movies;
+                renderAdminMovies(allMovies);
+            } catch (e) {}
+        }
+
+        function renderAdminMovies(movies) {
+            let html = '';
+            movies.forEach(m => {
+                html += `<tr class="border-b border-gray-800 hover:bg-gray-800 transition">
+                    <td class="p-4 font-medium">${m._id}</td>
+                    <td class="p-4 text-gray-400"><i class="fa-solid fa-eye text-gray-500"></i> ${m.clicks}</td>
+                    <td class="p-4 text-green-400 font-bold">${m.file_count}</td>
+                    <td class="p-4 text-right flex justify-end gap-2">
+                        <button onclick="openEditModal('${encodeURIComponent(m._id)}')" class="btn-edit hover:bg-blue-600 transition"><i class="fa-solid fa-pen"></i> Edit</button>
+                        <button onclick="deleteMovie('${encodeURIComponent(m._id)}')" class="bg-red-900 bg-opacity-40 text-red-400 hover:bg-red-600 hover:text-white px-3 py-1 rounded-lg transition"><i class="fa-solid fa-trash"></i> Del</button>
+                    </td>
+                </tr>`;
+            });
+            document.getElementById('movieTableBody').innerHTML = html || '<tr><td colspan="4" class="text-center p-8">No movies found</td></tr>';
+        }
+
+        function filterAdminMovies() {
+            const q = document.getElementById('adminSearch').value.toLowerCase();
+            const filtered = allMovies.filter(m => m._id.toLowerCase().includes(q));
+            renderAdminMovies(filtered);
+        }
+
+        async function deleteMovie(encodedTitle) {
+            if(!confirm('Are you sure you want to delete ALL files for this movie?')) return;
+            await fetch('/api/admin/movie/' + encodedTitle, {method: 'DELETE'});
+            alert('Movie Deleted!');
+            loadDashboardData();
+        }
+
+        function openEditModal(encodedTitle) {
+            const title = decodeURIComponent(encodedTitle);
+            currentEditingMovie = title;
+            const movie = allMovies.find(m => m._id === title);
+            if(!movie) return;
+            
+            document.getElementById('editMovieTitle').value = title;
+            
+            let fileHtml = '';
+            if(movie.files && movie.files.length > 0) {
+                movie.files.forEach(f => {
+                    fileHtml += `
+                    <div class="file-item-admin">
+                        <div><i class="fa-solid fa-file-video text-gray-500 mr-2"></i> <b>${f.quality}</b></div>
+                        <button onclick="deleteSingleFile('${f.id}')" class="text-red-400 hover:text-red-500 bg-red-900 bg-opacity-30 px-3 py-1 rounded"><i class="fa-solid fa-trash"></i> Delete File</button>
+                    </div>`;
+                });
+            } else {
+                fileHtml = '<p class="text-gray-500 text-center py-4">No files found.</p>';
+            }
+            document.getElementById('editFileList').innerHTML = fileHtml;
+            document.getElementById('editModal').style.display = "block";
+        }
+
+        function closeEditModal() {
+            document.getElementById('editModal').style.display = "none";
+        }
+
+        async function saveMovieRename() {
+            const newTitle = document.getElementById('editMovieTitle').value.trim();
+            if(!newTitle || newTitle === currentEditingMovie) return;
+            
+            try {
+                const res = await fetch('/api/admin/movie/rename', {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ old_title: currentEditingMovie, new_title: newTitle })
+                });
+                const data = await res.json();
+                if(data.ok) {
+                    alert("Movie renamed successfully!");
+                    closeEditModal();
+                    loadDashboardData();
+                } else { alert("Error renaming movie."); }
+            } catch(e) { alert("Network error."); }
+        }
+
+        async function deleteSingleFile(fileId) {
+            if(!confirm("Are you sure you want to delete this specific quality/file?")) return;
+            try {
+                const res = await fetch('/api/admin/movie/file/' + fileId, { method: 'DELETE' });
+                const data = await res.json();
+                if(data.ok) {
+                    alert("File deleted.");
+                    closeEditModal();
+                    loadDashboardData();
+                }
+            } catch(e) {}
+        }
+
+        async function loadSettings() {
+            const res = await fetch('/api/admin/settings_data');
+            const data = await res.json();
+            document.getElementById('setBkash').value = data.bkash;
+            document.getElementById('setNagad').value = data.nagad;
+            document.getElementById('setDelTime').value = data.del_time;
+            document.getElementById('setTgLink').value = data.tg_link;
+            document.getElementById('set18Link').value = data.link_18;
+            document.getElementById('setUnlockTime').value = data.unlock_duration;
+            
+            document.getElementById('linksContainer').innerHTML = data.links.map(l => `
+                <div class="flex justify-between items-center bg-gray-800 p-3 rounded-lg border border-gray-700">
+                    <span class="text-sm truncate mr-4">${l}</span>
+                    <button onclick="deleteLink('${encodeURIComponent(l)}')" class="text-red-400 hover:text-red-500"><i class="fa-solid fa-trash"></i></button>
+                </div>
+            `).join('');
+        }
+
+        async function saveSetting(type) {
+            let val = "";
+            if(type==='bkash') val = document.getElementById('setBkash').value;
+            if(type==='nagad') val = document.getElementById('setNagad').value;
+            if(type==='time') val = document.getElementById('setDelTime').value;
+            if(type==='tg_link') val = document.getElementById('setTgLink').value;
+            if(type==='link_18') val = document.getElementById('set18Link').value;
+            if(type==='unlock_time') val = document.getElementById('setUnlockTime').value;
+            
+            await fetch('/api/admin/update_setting', {
+                method: 'POST', headers:{'Content-Type': 'application/json'},
+                body: JSON.stringify({type: type, value: val})
+            });
+            alert('Settings Updated!');
+        }
+
+        async function addLink() {
+            const url = document.getElementById('newLink').value;
+            if(!url) return;
+            await fetch('/api/admin/links', {
+                method: 'POST', headers:{'Content-Type': 'application/json'},
+                body: JSON.stringify({link: url})
+            });
+            document.getElementById('newLink').value = '';
+            loadSettings();
+        }
+
+        async function deleteLink(url) {
+            await fetch('/api/admin/links?link=' + url, {method: 'DELETE'});
+            loadSettings();
+        }
+
+        async function userAction(action) {
+            const uid = document.getElementById('ctrlUserId').value;
+            if(!uid) return alert("Enter User ID!");
+            const res = await fetch('/api/admin/user_action', {
+                method: 'POST', headers:{'Content-Type': 'application/json'},
+                body: JSON.stringify({user_id: parseInt(uid), action: action})
+            });
+            const data = await res.json();
+            alert(data.msg);
+            document.getElementById('ctrlUserId').value = '';
+        }
+
+        loadDashboardData();
+    </script>
+</body>
+</html>

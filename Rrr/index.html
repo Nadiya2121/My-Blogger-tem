@@ -1,0 +1,1081 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>MovieZone Premium</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;800&display=swap" rel="stylesheet">
+    
+    <style>
+        :root {
+            --bg: #0f1115; --surface: #1a1d24; --surface-light: #252933;
+            --primary: #e11d48; --primary-glow: rgba(225, 29, 72, 0.5);
+            --text: #f4f4f5; --text-muted: #a1a1aa;
+            --success: #10b981; --warning: #f59e0b;
+            --glass: rgba(26, 29, 36, 0.8);
+        }
+        
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Poppins', sans-serif; -webkit-tap-highlight-color: transparent; }
+        body { background: var(--bg); color: var(--text); padding-bottom: 80px; overflow-x: hidden; }
+        
+        header { display: flex; justify-content: space-between; align-items: center; padding: 15px 20px; background: var(--glass); backdrop-filter: blur(12px); position: sticky; top: 0; z-index: 1000; border-bottom: 1px solid rgba(255,255,255,0.05); }
+        .logo { font-size: 22px; font-weight: 800; display:flex; align-items:center; gap:5px; }
+        .logo span { background: var(--primary); color: white; padding: 2px 8px; border-radius: 6px; font-size: 14px; text-transform: uppercase; }
+        .header-coins { background: rgba(245, 158, 11, 0.1); border: 1px solid var(--warning); padding: 5px 12px; border-radius: 20px; color: var(--warning); font-weight: 600; font-size: 14px; display:flex; align-items:center; gap:5px; }
+
+        .category-scroll { display: flex; overflow-x: auto; gap: 10px; padding: 15px 20px 10px; scroll-behavior: smooth; }
+        .category-scroll::-webkit-scrollbar { display: none; }
+        .cat-chip { padding: 6px 16px; background: var(--surface); border: 1px solid var(--surface-light); border-radius: 20px; font-size: 13px; font-weight: 600; color: var(--text-muted); white-space: nowrap; cursor: pointer; transition: 0.3s; }
+        .cat-chip.active { background: var(--primary); border-color: var(--primary); color: white; box-shadow: 0 0 10px var(--primary-glow); }
+
+        .tab-content { display: none; animation: fadeIn 0.3s ease; }
+        .tab-content.active { display: block; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+        .bottom-nav { position: fixed; bottom: 0; left: 0; width: 100%; background: var(--glass); backdrop-filter: blur(15px); display: flex; justify-content: space-around; padding: 12px 0; border-top: 1px solid rgba(255,255,255,0.05); z-index: 2000; padding-bottom: env(safe-area-inset-bottom, 15px); }
+        .nav-item { display: flex; flex-direction: column; align-items: center; color: var(--text-muted); text-decoration: none; font-size: 11px; font-weight: 600; gap: 4px; cursor: pointer; transition: 0.3s; width: 25%; }
+        .nav-item i { font-size: 20px; transition: 0.3s; }
+        .nav-item.active { color: var(--primary); }
+        .nav-item.active i { transform: translateY(-3px); text-shadow: 0 0 10px var(--primary-glow); }
+
+        .hero-banner { position: relative; width: 100%; height: 350px; overflow: hidden; }
+        .hero-banner img { width: 100%; height: 100%; object-fit: cover; mask-image: linear-gradient(to top, transparent, black 40%); -webkit-mask-image: linear-gradient(to top, transparent, black 40%); }
+        .hero-content { position: absolute; bottom: 20px; left: 20px; right: 20px; z-index: 10; }
+        .hero-title { font-size: 28px; font-weight: 800; text-shadow: 0 2px 10px rgba(0,0,0,0.8); line-height: 1.2; margin-bottom: 5px; }
+        .hero-genres { font-size: 12px; color: var(--primary); font-weight: 600; margin-bottom: 10px; text-shadow: 0 1px 5px black; }
+        .hero-btn { background: var(--text); color: black; padding: 10px 20px; border-radius: 25px; font-weight: 800; border: none; display: flex; align-items: center; gap: 8px; cursor: pointer; box-shadow: 0 4px 15px rgba(255,255,255,0.2); transition: 0.2s; }
+        .hero-btn:active { transform: scale(0.95); }
+
+        .section-title { padding: 0 20px; font-size: 18px; font-weight: 600; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
+
+        .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; padding: 0 20px; align-items: start; }
+        
+        .h-card { width: 100%; cursor: pointer; background: var(--surface); border-radius: 14px; padding-bottom: 15px; box-shadow: 0 4px 10px rgba(0,0,0,0.2); }
+        
+        .img-wrap { 
+            width: 100%; height: 220px; position: relative; border-radius: 14px 14px 0 0; padding: 3px; 
+            background: linear-gradient(45deg, #00d2ff, #3a7bd5, #f093fb, #f5576c);
+            background-size: 200% 200%; animation: gradientGlow 4s ease infinite;
+        }
+        @keyframes gradientGlow { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
+        
+        .img-wrap img { width: 100%; height: 100%; object-fit: cover; border-radius: 12px 12px 0 0; background: var(--surface-light); display: block; }
+
+        .views-tag { position: absolute; bottom: 8px; left: 8px; background: rgba(0,0,0,0.7); color: white; font-size: 12px; font-weight: bold; padding: 4px 8px; border-radius: 6px; display: flex; align-items: center; gap: 5px; backdrop-filter: blur(4px); }
+        .quality-tag { position: absolute; top: 8px; right: 8px; background: #10b981; color: white; font-size: 11px; font-weight: 800; padding: 4px 8px; border-radius: 6px; display: flex; align-items: center; gap: 5px; box-shadow: 0 2px 5px rgba(0,0,0,0.3); }
+
+        .card-title { font-size: 14px; font-weight: 600; color: var(--text); text-align: center; margin-top: 12px; padding: 0 8px; line-height: 1.4; word-wrap: break-word; }
+
+        .h-scroll { 
+            display: flex; overflow-x: auto; gap: 15px; padding: 0 20px 20px; 
+            scroll-behavior: smooth; align-items: start;
+            scroll-snap-type: x mandatory; 
+        }
+        .h-scroll::-webkit-scrollbar { display: none; }
+        .h-scroll .h-card { 
+            min-width: 140px; width: 140px; 
+            scroll-snap-align: start; 
+        }
+        .h-scroll .img-wrap { height: 190px; }
+
+        .pagination { display: flex; justify-content: center; align-items: center; gap: 8px; margin: 25px 0; padding-bottom: 30px; flex-wrap: wrap; }
+        .page-btn { background: var(--surface); border: 1px solid var(--surface-light); color: var(--text); padding: 8px 14px; border-radius: 8px; font-weight: 600; cursor: pointer; transition: 0.3s; }
+        .page-btn:active { transform: scale(0.9); }
+        .page-btn.active { background: var(--primary); border-color: var(--primary); color: white; box-shadow: 0 0 10px var(--primary-glow); }
+
+        .search-box { margin: 20px; position: relative; }
+        .search-box input { width: 100%; background: var(--surface); border: 1px solid var(--surface-light); padding: 15px 20px 15px 45px; border-radius: 12px; color: white; font-size: 16px; outline: none; transition: 0.3s; }
+        .search-box input:focus { border-color: var(--primary); box-shadow: 0 0 15px var(--primary-glow); }
+        .search-box i { position: absolute; left: 18px; top: 50%; transform: translateY(-50%); color: var(--text-muted); font-size: 18px; }
+        
+        @keyframes rgbBorderGlow {
+            0% { border-color: #ff004c; box-shadow: 0 0 15px rgba(255,0,76,0.4); }
+            33% { border-color: #00ff88; box-shadow: 0 0 15px rgba(0,255,136,0.4); }
+            66% { border-color: #00bfff; box-shadow: 0 0 15px rgba(0,191,255,0.4); }
+            100% { border-color: #ff004c; box-shadow: 0 0 15px rgba(255,0,76,0.4); }
+        }
+        .rgb-border {
+            border: 2px solid #ff004c;
+            animation: rgbBorderGlow 4s linear infinite;
+        }
+
+        .request-banner { background: linear-gradient(135deg, var(--surface), #202020); border-radius: 14px; padding: 20px; margin: 0 20px 25px 20px; display: flex; align-items: center; justify-content: space-between; cursor: pointer; transition: transform 0.2s; }
+        .request-banner:active { transform: scale(0.97); }
+        .req-banner-text h3 { color: white; font-weight: 800; font-size: 16px; margin-bottom: 3px; }
+        .req-banner-text p { color: rgba(255,255,255,0.6); font-size: 12px; }
+        .req-banner-icon { font-size: 35px; color: rgba(255,255,255,0.8); }
+
+        .dashboard-card { background: linear-gradient(135deg, var(--surface), #202020); border: 1px solid var(--surface-light); border-radius: 16px; padding: 20px; margin: 20px; display: flex; align-items: center; gap: 15px; position: relative; overflow: hidden; }
+        .dashboard-card::after { content: ''; position:absolute; top:0; right:0; width:100px; height:100px; background:var(--primary-glow); filter:blur(50px); z-index:0; }
+        .profile-pic { width: 60px; height: 60px; border-radius: 50%; border: 2px solid var(--primary); z-index: 1; }
+        .profile-info { z-index: 1; }
+        .vip-badge { display:inline-block; background: linear-gradient(45deg, #f59e0b, #d97706); color:black; font-size:11px; font-weight:800; padding:2px 8px; border-radius:12px; margin-top:5px;}
+        
+        .menu-list { padding: 0 20px; }
+        .menu-item { display: flex; align-items: center; justify-content: space-between; padding: 18px; background: var(--surface); margin-bottom: 10px; border-radius: 12px; font-weight: 600; cursor: pointer; transition: 0.2s; border: 1px solid transparent; }
+        .menu-item:active { transform: scale(0.98); border-color: var(--surface-light); }
+        .menu-item-left { display: flex; align-items: center; gap: 15px; }
+        .menu-item i.icon { font-size: 20px; width: 25px; text-align: center; }
+
+        .modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); backdrop-filter: blur(5px); z-index: 3000; display: none; opacity: 0; transition: opacity 0.3s; }
+        .bottom-sheet { position: fixed; bottom: -100%; left: 0; width: 100%; background: var(--surface); border-radius: 24px 24px 0 0; padding: 25px 20px; z-index: 3001; transition: bottom 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275); display: flex; flex-direction: column; align-items: center; border-top: 1px solid var(--surface-light); max-height: 85vh; overflow-y: auto; }
+        .modal-overlay.show { display: block; opacity: 1; }
+        .modal-overlay.show .bottom-sheet { bottom: 0; }
+        
+        .sheet-handle { width: 40px; height: 5px; background: var(--surface-light); border-radius: 5px; margin: -10px auto 20px; flex-shrink: 0; }
+        .lock-icon-wrap { width: 80px; height: 80px; background: rgba(225, 29, 72, 0.1); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 35px; color: var(--primary); margin-bottom: 15px; }
+        
+        .btn-primary { width: 100%; background: linear-gradient(45deg, var(--primary), #be123c); color: white; border: none; padding: 16px; border-radius: 14px; font-size: 16px; font-weight: 800; cursor: pointer; transition: 0.3s; margin-top: 10px; box-shadow: 0 5px 15px var(--primary-glow); }
+        .btn-outline { width: 100%; background: transparent; color: white; border: 2px solid var(--surface-light); padding: 14px; border-radius: 14px; font-size: 15px; font-weight: bold; cursor: pointer; transition: 0.3s; margin-top: 10px; }
+        .btn-primary:disabled { background: var(--surface-light); color: var(--text-muted); box-shadow: none; }
+        .btn-primary:active:not(:disabled), .btn-outline:active { transform: scale(0.96); }
+
+        .file-list { width: 100%; overflow-y: auto; margin-top: 15px; }
+        .file-item { width: 100%; background: var(--bg); border: 1px solid var(--surface-light); padding: 16px; border-radius: 12px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; font-weight: 600; cursor: pointer; }
+        .file-item:active { border-color: var(--primary); }
+        .file-unlocked { border-left: 4px solid var(--success); }
+        .file-locked { border-left: 4px solid var(--primary); }
+
+        @keyframes rgbButtonGlow {
+            0% { box-shadow: 0 0 10px #ff004c, inset 0 0 5px #ff004c; border-color: #ff004c; }
+            33% { box-shadow: 0 0 10px #00ff88, inset 0 0 5px #00ff88; border-color: #00ff88; }
+            66% { box-shadow: 0 0 10px #00bfff, inset 0 0 5px #00bfff; border-color: #00bfff; }
+            100% { box-shadow: 0 0 10px #ff004c, inset 0 0 5px #ff004c; border-color: #ff004c; }
+        }
+        .rgb-button {
+            border: 2px solid #ff004c;
+            animation: rgbButtonGlow 3s infinite linear;
+            transition: transform 0.2s;
+        }
+        .rgb-button:active { transform: scale(0.96); }
+
+        .sheet-tabs { display: flex; width: 100%; background: #0f1115; border-radius: 10px; padding: 4px; margin-bottom: 15px; }
+        .sheet-tab { flex: 1; text-align: center; padding: 10px; font-weight: bold; color: var(--text-muted); cursor: pointer; border-radius: 8px; transition: 0.3s; }
+        .sheet-tab.active { background: var(--surface-light); color: white; }
+
+        .review-box { width: 100%; background: var(--bg); border: 1px solid var(--surface-light); padding: 15px; border-radius: 12px; margin-bottom: 10px; }
+        .star-rating { color: #facc15; font-size: 16px; }
+        .star-input { display: flex; gap: 10px; font-size: 24px; color: #555; justify-content: center; margin-bottom: 15px; cursor: pointer; }
+        .star-input i:hover, .star-input i.selected { color: #facc15; }
+        
+        .toast-container { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); z-index: 4000; display: flex; flex-direction: column; gap: 10px; width: 90%; max-width: 400px; }
+        .toast { background: var(--surface-light); color: white; padding: 14px 20px; border-radius: 12px; font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 10px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); animation: slideDown 0.3s forwards, fadeOut 0.3s 3s forwards; border-left: 4px solid var(--primary); }
+        @keyframes slideDown { from{ transform: translateY(-50px); opacity:0; } to{ transform: translateY(0); opacity:1; } }
+        @keyframes fadeOut { from{ opacity:1; } to{ opacity:0; } }
+
+        .fab-container { position: fixed; right: 20px; bottom: 90px; display: flex; flex-direction: column; gap: 15px; z-index: 1000; }
+        .fab { width: 45px; height: 45px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 20px; color: white; box-shadow: 0 4px 15px rgba(0,0,0,0.5); cursor: pointer; }
+        .fab-18 { background: linear-gradient(45deg, #000, var(--primary)); border: 1px solid var(--primary); font-size:16px; font-weight:800; }
+        .fab-tg { background: linear-gradient(45deg, #24A1DE, #1b7ba8); }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="logo">MovieZone <span>Pro</span></div>
+        <div class="header-coins" onclick="switchTab('profile')">
+            <i class="fa-solid fa-coins"></i> <span id="headerCoinCount">0</span>
+        </div>
+    </header>
+
+    <div id="home-tab" class="tab-content active">
+        <div id="heroBanner" class="hero-banner" style="display:none;">
+            <img id="heroImg" src="">
+            <div class="hero-content">
+                <h1 id="heroTitle" class="hero-title">Loading...</h1>
+                <div id="heroGenres" class="hero-genres">Action • Thriller</div>
+                <button class="hero-btn" onclick="playHero()"><i class="fa-solid fa-play"></i> Watch Now</button>
+            </div>
+        </div>
+
+        <div class="category-scroll" id="categoryList">
+            <div class="cat-chip active" onclick="filterGenre('All')">All</div>
+            <div class="cat-chip" onclick="filterGenre('Action')">Action</div>
+            <div class="cat-chip" onclick="filterGenre('Comedy')">Comedy</div>
+            <div class="cat-chip" onclick="filterGenre('Horror')">Horror</div>
+            <div class="cat-chip" onclick="filterGenre('Sci-Fi')">Sci-Fi</div>
+            <div class="cat-chip" onclick="filterGenre('Romance')">Romance</div>
+            <div class="cat-chip" onclick="filterGenre('Thriller')">Thriller</div>
+            <div class="cat-chip" onclick="filterGenre('Animation')">Animation</div>
+        </div>
+
+        <div class="section-title"><span>🔥 Trending Now</span></div>
+        <div class="h-scroll" id="trendingList"></div>
+
+        <div class="section-title" style="margin-top:10px;"><span id="latestTitle">✨ New Releases</span></div>
+        <div class="grid" id="movieGrid"></div>
+        <div class="pagination" id="paginationBox"></div>
+    </div>
+
+    <div id="search-tab" class="tab-content">
+        <div class="search-box">
+            <i class="fa-solid fa-magnifying-glass"></i>
+            <input type="text" id="searchInput" placeholder="Search movies, series...">
+        </div>
+        
+        <div class="request-banner rgb-border" onclick="openModal('reqModal'); loadRequests();">
+            <div class="req-banner-text">
+                <h3>মুভি খুঁজে পাচ্ছেন না?</h3>
+                <p>এখানে ক্লিক করে অ্যাডমিনকে রিকোয়েস্ট করুন!</p>
+            </div>
+            <div class="req-banner-icon">
+                <i class="fa-solid fa-bullhorn text-red-500"></i>
+            </div>
+        </div>
+
+        <div class="grid" id="searchGrid"></div>
+    </div>
+
+    <div id="missions-tab" class="tab-content">
+        <div class="dashboard-card" style="margin-bottom:10px;">
+            <div class="lock-icon-wrap" style="width:50px; height:50px; font-size:20px; box-shadow:none;"><i class="fa-solid fa-gift text-pink-500"></i></div>
+            <div>
+                <h3 style="font-size:18px;">Earn Free Coins</h3>
+                <p style="font-size:12px; color:var(--text-muted); margin-bottom:0;">Collect coins to get VIP Access!</p>
+            </div>
+        </div>
+        <div class="menu-list">
+            <div class="menu-item" onclick="claimCheckin()">
+                <div class="menu-item-left"><i class="icon fa-solid fa-calendar-check text-green-400"></i> 
+                    <div style="display:flex; flex-direction:column;">
+                        <span>Daily Check-in</span>
+                        <span style="font-size:10px; color:var(--text-muted);" id="streakText">Loading streak...</span>
+                    </div>
+                </div>
+                <i class="fa-solid fa-chevron-right text-muted"></i>
+            </div>
+            <div class="menu-item" onclick="openQuiz()">
+                <div class="menu-item-left"><i class="icon fa-solid fa-gamepad text-purple-400"></i> 
+                    <div style="display:flex; flex-direction:column;">
+                        <span>Guess The Movie Emoji</span>
+                        <span style="font-size:10px; color:var(--text-muted);">Daily Quiz (+10 Coins)</span>
+                    </div>
+                </div>
+                <i class="fa-solid fa-chevron-right text-muted"></i>
+            </div>
+            <div class="menu-item" onclick="watchAdForCoins(1)">
+                <div class="menu-item-left"><i class="icon fa-brands fa-youtube text-red-500"></i> Watch Ad Slot 1 (+5 Coins)</div>
+                <i class="fa-solid fa-chevron-right text-muted"></i>
+            </div>
+            <div class="menu-item" onclick="watchAdForCoins(2)">
+                <div class="menu-item-left"><i class="icon fa-brands fa-youtube text-red-400"></i> Watch Ad Slot 2 (+5 Coins)</div>
+                <i class="fa-solid fa-chevron-right text-muted"></i>
+            </div>
+            <div class="menu-item" onclick="watchAdForCoins(3)">
+                <div class="menu-item-left"><i class="icon fa-brands fa-youtube text-red-300"></i> Watch Ad Slot 3 (+5 Coins)</div>
+                <i class="fa-solid fa-chevron-right text-muted"></i>
+            </div>
+        </div>
+    </div>
+
+    <div id="profile-tab" class="tab-content">
+        <div class="dashboard-card">
+            <img id="uPic" src="https://cdn-icons-png.flaticon.com/512/3135/3135715.png" class="profile-pic">
+            <div class="profile-info">
+                <h2 id="uName" style="font-size:20px; font-weight:800;">Loading...</h2>
+                <div id="vipBadge" class="vip-badge" style="display:none;"><i class="fa-solid fa-crown"></i> VIP Member</div>
+                <p id="vipExpiryText" style="font-size:11px; color:var(--text-muted); margin-top:3px; display:none;"></p>
+            </div>
+        </div>
+        <div class="menu-list">
+            <div class="menu-item" onclick="openModal('vipModal')">
+                <div class="menu-item-left"><i class="icon fa-solid fa-crown text-warning"></i> Buy VIP / Remove Ads</div>
+                <i class="fa-solid fa-chevron-right text-muted"></i>
+            </div>
+            <div class="menu-item" onclick="convertCoins()">
+                <div class="menu-item-left"><i class="icon fa-solid fa-coins text-yellow-400"></i> Buy VIP with Coins (50)</div>
+                <i class="fa-solid fa-chevron-right text-muted"></i>
+            </div>
+            <div class="menu-item" onclick="copyReferLink()">
+                <div class="menu-item-left"><i class="icon fa-solid fa-share-nodes text-blue-400"></i> Invite Friends (<span id="refCountNum">0</span>)</div>
+                <i class="fa-solid fa-copy text-muted"></i>
+            </div>
+            <div class="menu-item" onclick="openModal('leaderboardModal'); loadLeaderboard();">
+                <div class="menu-item-left"><i class="icon fa-solid fa-trophy text-yellow-500"></i> Top Referrers</div>
+                <i class="fa-solid fa-chevron-right text-muted"></i>
+            </div>
+            <div class="menu-item" onclick="openModal('reqModal'); loadRequests();">
+                <div class="menu-item-left"><i class="icon fa-solid fa-code-pull-request text-green-400"></i> Movie Requests Board</div>
+                <i class="fa-solid fa-chevron-right text-muted"></i>
+            </div>
+        </div>
+        <p id="refLinkText" style="display:none;"></p>
+    </div>
+
+    <div class="fab-container">
+        <div class="fab fab-18" onclick="window.open('{{LINK_18}}')">18+</div>
+        <div class="fab fab-tg" onclick="window.open('{{TG_LINK}}')"><i class="fa-brands fa-telegram"></i></div>
+    </div>
+
+    <nav class="bottom-nav">
+        <a class="nav-item active" onclick="switchTab('home')"><i class="fa-solid fa-house"></i> Home</a>
+        <a class="nav-item" onclick="switchTab('search')"><i class="fa-solid fa-magnifying-glass"></i> Search</a>
+        <a class="nav-item" onclick="switchTab('missions')"><i class="fa-solid fa-gift"></i> VIP/Coins</a>
+        <a class="nav-item" onclick="switchTab('profile')"><i class="fa-solid fa-user"></i> Profile</a>
+    </nav>
+
+    <div id="toastContainer" class="toast-container"></div>
+
+    <div id="qualitySheet" class="modal-overlay" onclick="if(event.target===this) closeModal('qualitySheet')">
+        <div class="bottom-sheet">
+            <div class="sheet-handle"></div>
+            <h2 id="sheetMovieTitle" style="font-size:20px; font-weight:800; align-self:flex-start; margin-bottom:5px; width:100%; word-wrap:break-word;">Movie Title</h2>
+            
+            <div class="sheet-tabs">
+                <div class="sheet-tab active" id="tabBtnFiles" onclick="switchSheetTab('files')">📥 Downloads</div>
+                <div class="sheet-tab" id="tabBtnReviews" onclick="switchSheetTab('reviews')">⭐ Reviews</div>
+            </div>
+
+            <div id="sheetSectionFiles" style="width:100%;">
+                <p style="align-self:flex-start; color:var(--text-muted); font-size:13px; margin-bottom:10px;">Select option to get file in bot:</p>
+                <div id="qualityList" class="file-list"></div>
+            </div>
+
+            <div id="sheetSectionReviews" style="width:100%; display:none;">
+                <div style="text-align:center; margin-bottom:15px;">
+                    <h1 style="font-size:35px; font-weight:800; color:#facc15; margin:0;" id="revAvg">0.0</h1>
+                    <div class="star-rating" id="revStars"><i class="fa-solid fa-star text-gray-500"></i></div>
+                    <p style="font-size:12px; color:var(--text-muted);" id="revCount">0 reviews</p>
+                </div>
+
+                <div style="background:var(--bg); border:1px solid var(--surface-light); padding:15px; border-radius:12px; margin-bottom:20px;">
+                    <h4 style="margin-bottom:10px; font-size:14px; text-align:center;">Rate this movie</h4>
+                    <div class="star-input" id="starInputBox">
+                        <i class="fa-solid fa-star" onclick="setRating(1)"></i>
+                        <i class="fa-solid fa-star" onclick="setRating(2)"></i>
+                        <i class="fa-solid fa-star" onclick="setRating(3)"></i>
+                        <i class="fa-solid fa-star" onclick="setRating(4)"></i>
+                        <i class="fa-solid fa-star" onclick="setRating(5)"></i>
+                    </div>
+                    <textarea id="revTextInput" placeholder="Write your review here..." style="width:100%; background:var(--surface); border:1px solid var(--surface-light); color:white; padding:10px; border-radius:8px; outline:none; height:60px; margin-bottom:10px;"></textarea>
+                    <button style="width:100%; background:var(--primary); color:white; border:none; padding:10px; border-radius:8px; font-weight:bold; cursor:pointer;" onclick="submitReview()">Submit Review</button>
+                </div>
+
+                <div id="reviewsListDiv" style="width:100%; max-height:250px; overflow-y:auto; padding-right:5px;"></div>
+            </div>
+
+            <button class="btn-outline" style="border:none; color:var(--text-muted);" onclick="closeModal('qualitySheet')">Close Window</button>
+        </div>
+    </div>
+
+    <div id="unlockSheet" class="modal-overlay" onclick="if(event.target===this) closeModal('unlockSheet')">
+        <div class="bottom-sheet">
+            <div class="sheet-handle"></div>
+            <div class="lock-icon-wrap rgb-border" id="lockIcon"><i class="fa-solid fa-lock"></i></div>
+            <h2 style="font-size:24px; font-weight:800; margin-bottom:5px; color:white; text-align:center;">🔒 আনলক করুন</h2>
+            <p style="color:var(--text-muted); font-size:13px; text-align:center; margin-bottom:20px;">মুভিটি ইনবক্সে পেতে নিচের যেকোনো একটি উপায় বেছে নিন:</p>
+            
+            <div style="width:100%; background:var(--bg); border:1px solid var(--surface-light); padding:15px; border-radius:12px; margin-bottom:15px;">
+                <h3 style="font-size:15px; color:white; font-weight:bold; margin-bottom:5px;"><i class="fa-solid fa-play text-red-500"></i> উপায় ১: অ্যাড দেখুন</h3>
+                <p style="font-size:11px; color:gray; margin-bottom:10px; line-height:1.4;">লিংকে ক্লিক করে পেজটিতে ঠিক ১০ সেকেন্ড অপেক্ষা করুন। এরপর ফিরে আসলেই আনলক হবে।</p>
+                <button id="dlClickBtn" class="btn-primary" style="margin-top:0;" onclick="executeDirectLink()">📺 অ্যাড দেখে আনলক করুন</button>
+            </div>
+
+            <div style="font-size:14px; font-weight:bold; color:gray; text-align:center; margin-bottom:15px;">— অথবা —</div>
+            
+            <div style="width:100%; background:var(--bg); border:2px solid transparent; padding:15px; border-radius:12px; position:relative; overflow:hidden;" class="rgb-border">
+                <h3 style="font-size:15px; color:white; font-weight:bold; margin-bottom:5px;"><i class="fa-solid fa-user-plus text-green-400"></i> উপায় ২: বন্ধুকে শেয়ার (VIP)</h3>
+                <p style="font-size:11px; color:gray; margin-bottom:10px; line-height:1.4;">মাত্র ১ জন বন্ধুকে আপনার লিংক থেকে বটে জয়েন করালেই পাবেন ১ দিনের ফ্রি VIP! (সব মুভি অটো আনলক)</p>
+                <button class="btn-outline" style="border-color:var(--success); color:white; background:var(--success); margin-top:0;" onclick="shareToUnlock()"><i class="fa-brands fa-telegram"></i> শেয়ার করে VIP নিন</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="quizModal" class="modal-overlay" onclick="if(event.target===this) closeModal('quizModal')">
+        <div class="bottom-sheet">
+            <div class="sheet-handle"></div>
+            <h2 style="font-size:20px; font-weight:800; color:white; margin-bottom:10px;">Guess the Movie!</h2>
+            <p style="color:var(--text-muted); font-size:12px; margin-bottom:20px;">What movie do these emojis represent?</p>
+            
+            <div id="quizEmoji" style="font-size:45px; letter-spacing:5px; margin-bottom:20px; text-align:center; background:var(--bg); padding:15px; border-radius:15px; width:100%;">🕷️👨🕸️</div>
+            
+            <div id="quizOptions" style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; width:100%;"></div>
+        </div>
+    </div>
+
+    <div id="vipModal" class="modal-overlay" onclick="if(event.target===this) closeModal('vipModal')">
+        <div class="bottom-sheet" style="max-height:85vh; overflow-y:auto;">
+            <div class="sheet-handle"></div>
+            <h2 style="color:var(--warning); margin-bottom:15px;"><i class="fa-solid fa-crown"></i> Get VIP Access</h2>
+            <div style="display:flex; width:100%; gap:10px; margin-bottom:15px;">
+                <button style="flex:1; padding:12px; border-radius:10px; background:#e11471; border:none; color:white; font-weight:bold;" onclick="selectPayment('bkash')">bKash</button>
+                <button style="flex:1; padding:12px; border-radius:10px; background:#f97316; border:none; color:white; font-weight:bold;" onclick="selectPayment('nagad')">Nagad</button>
+            </div>
+            <div id="payBox" style="display:none; width:100%; background:var(--bg); padding:15px; border-radius:12px;">
+                <div style="margin-bottom:15px;">
+                    <label><input type="radio" name="vip_pkg" value="7" data-price="10" checked> 7 Days - 10 BDT</label><br><br>
+                    <label><input type="radio" name="vip_pkg" value="30" data-price="30"> 30 Days - 30 BDT</label>
+                </div>
+                <p style="font-size:13px; color:var(--text-muted);">Send money to:</p>
+                <h2 id="payNumberText" style="color:var(--success); margin:10px 0; font-size:24px; text-align:center; letter-spacing:2px;">...</h2>
+                <input type="text" id="trxIdInput" placeholder="Enter TrxID here..." style="width:100%; padding:15px; border-radius:10px; border:1px solid var(--surface-light); background:var(--surface); color:white; margin-bottom:15px; outline:none;">
+                <button class="btn-primary" onclick="submitPayment()">Verify Payment</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="leaderboardModal" class="modal-overlay" onclick="if(event.target===this) closeModal('leaderboardModal')">
+        <div class="bottom-sheet">
+            <div class="sheet-handle"></div>
+            <h2 style="color:var(--warning);"><i class="fa-solid fa-trophy"></i> Top Referrers</h2>
+            <div id="lbList" style="width:100%; max-height:50vh; overflow-y:auto; margin-top:15px;"></div>
+        </div>
+    </div>
+    
+    <div id="reqModal" class="modal-overlay" onclick="if(event.target===this) closeModal('reqModal')">
+        <div class="bottom-sheet" style="height:85vh; padding-bottom: 20px;">
+            <div class="sheet-handle"></div>
+            <h2 style="font-size:24px; font-weight:800; color:white; margin-bottom:5px;"><i class="fa-solid fa-bullhorn text-red-500"></i> Request Movie</h2>
+            <p style="color:var(--text-muted); font-size:12px; margin-bottom:15px; text-align:center;">Type exact movie name. Admins will review and upload it soon!</p>
+            <div style="display:flex; width:100%; gap:10px; background:var(--bg); padding:10px; border-radius:15px; border:1px solid var(--primary-glow);">
+                <input type="text" id="reqText" placeholder="Movie Name (e.g., Avatar 2)..." style="flex:1; padding:14px; border-radius:10px; background:transparent; border:none; color:white; outline:none; font-weight:bold; font-size:16px;">
+                <button onclick="sendReq()" style="background:var(--primary); color:white; border:none; border-radius:10px; padding:0 22px; font-size:18px; cursor:pointer; box-shadow:0 0 10px var(--primary-glow);"><i class="fa-solid fa-paper-plane"></i></button>
+            </div>
+            
+            <h3 style="width:100%; margin-top:25px; margin-bottom:10px; font-size:16px; border-bottom:1px solid var(--surface-light); padding-bottom:5px;">🔥 Pending Community Requests</h3>
+            <div id="reqList" style="width:100%; overflow-y:auto; flex:1; padding-right:5px;"></div>
+        </div>
+    </div>
+
+    <script>
+        let tg = window.Telegram.WebApp; 
+        tg.expand();
+        
+        const DIRECT_LINKS = {{ DIRECT_LINKS | safe }};
+        const INIT_DATA = tg.initData || "";
+        const BOT_UNAME = "{{BOT_USER}}";
+        const BKASH_NO = "{{BKASH_NO}}";
+        const NAGAD_NO = "{{NAGAD_NO}}";
+        
+        let uid = tg.initDataUnsafe?.user?.id || 0;
+        let loadedMovies = {}; 
+        let isUserVip = false;
+        let isAdmin = false; 
+        let canQuizPlay = false;
+        let currentGenre = 'All'; 
+        let currentPage = 1;
+        let trendingScrollTimer = null; 
+        let currentlyViewingMovie = "";
+        let currentRating = 5;
+
+        const quizzes = [
+            {q: "🕷️👨🕸️", opts: ["Spider-Man", "Batman", "Ant-Man", "Iron Man"], ans: "Spider-Man"},
+            {q: "🚢🧊💑", opts: ["Avatar", "Titanic", "Pirates of Caribbean", "Jaws"], ans: "Titanic"},
+            {q: "🦁👑", opts: ["Jungle Book", "Tarzan", "The Lion King", "Madagascar"], ans: "The Lion King"},
+            {q: "🦇🤡🦇", opts: ["Joker", "Batman", "Dracula", "Venom"], ans: "Batman"},
+            {q: "🦖🦕🚙", opts: ["Godzilla", "Jurassic Park", "Transformers", "King Kong"], ans: "Jurassic Park"}
+        ];
+        let currentQuiz = {};
+
+        function getImageUrl(photoId) {
+            if (photoId.startsWith('http')) return photoId;
+            return '/api/image/' + photoId;
+        }
+
+        function switchTab(tabId) {
+            document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+            document.getElementById(tabId + '-tab').classList.add('active');
+            event.currentTarget.classList.add('active');
+            if(tabId === 'home') window.scrollTo({ top: 0, behavior: 'smooth' });
+            if(tabId === 'search') document.getElementById('searchInput').focus();
+        }
+
+        function filterGenre(g) {
+            currentGenre = g;
+            currentPage = 1;
+            document.querySelectorAll('.cat-chip').forEach(c => c.classList.remove('active'));
+            event.currentTarget.classList.add('active');
+            document.getElementById('latestTitle').innerText = g === 'All' ? '✨ New Releases' : '✨ ' + g + ' Movies';
+            loadMovies(currentPage);
+        }
+
+        function openModal(id) { document.getElementById(id).classList.add('show'); }
+        function closeModal(id) { document.getElementById(id).classList.remove('show'); }
+
+        function showToast(msg, type = "success") {
+            const container = document.getElementById('toastContainer');
+            const toast = document.createElement('div');
+            toast.className = 'toast';
+            let icon = type === 'success' ? '<i class="fa-solid fa-circle-check" style="color:var(--success); font-size:18px;"></i>' : '<i class="fa-solid fa-circle-exclamation" style="color:var(--warning); font-size:18px;"></i>';
+            if(type === 'error') {
+                toast.style.borderLeftColor = 'var(--primary)';
+                icon = '<i class="fa-solid fa-triangle-exclamation" style="color:var(--primary); font-size:18px;"></i>';
+            }
+            toast.innerHTML = `${icon} <span>${msg}</span>`;
+            container.appendChild(toast);
+            setTimeout(() => { if(toast.parentNode) toast.remove(); }, 3500);
+        }
+
+        function formatViews(num) {
+            if (num >= 1000000) return (num / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+            if (num >= 1000) return (num / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
+            return num.toString();
+        }
+
+        async function fetchUserInfo() {
+            if(tg.initDataUnsafe?.user) {
+                document.getElementById('uName').innerText = tg.initDataUnsafe.user.first_name;
+                if(tg.initDataUnsafe.user.photo_url) document.getElementById('uPic').src = tg.initDataUnsafe.user.photo_url;
+            }
+            try {
+                const res = await fetch('/api/user/' + uid);
+                const data = await res.json();
+                isUserVip = data.vip;
+                isAdmin = data.is_admin;
+                canQuizPlay = data.can_quiz;
+                
+                document.getElementById('headerCoinCount').innerText = data.coins;
+                if(isUserVip) {
+                    document.getElementById('vipBadge').style.display = 'inline-block';
+                    if(data.vip_expiry) {
+                        document.getElementById('vipExpiryText').style.display = 'block';
+                        document.getElementById('vipExpiryText').innerText = 'Valid till: ' + data.vip_expiry;
+                    }
+                }
+                document.getElementById('refCountNum').innerText = data.refer_count;
+                document.getElementById('refLinkText').innerText = `https://t.me/${BOT_UNAME}?start=ref_${uid}`;
+                
+                let streakTextHtml = `Current Streak: ${data.streak} Day(s) 🔥`;
+                if(!data.can_checkin) streakTextHtml += " (Claimed)";
+                document.getElementById('streakText').innerText = streakTextHtml;
+                
+                loadTrending();
+                loadMovies(currentPage);
+            } catch(e) {}
+        }
+
+        function startTrendingAutoScroll() {
+            const slider = document.getElementById('trendingList');
+            if(!slider || slider.children.length === 0) return;
+            
+            clearInterval(trendingScrollTimer);
+            trendingScrollTimer = setInterval(() => {
+                let maxScroll = slider.scrollWidth - slider.clientWidth;
+                if (slider.scrollLeft >= maxScroll - 10) {
+                    slider.scrollTo({ left: 0, behavior: 'smooth' });
+                } else {
+                    slider.scrollBy({ left: 155, behavior: 'smooth' });
+                }
+            }, 3000); 
+        }
+        
+        function stopTrendingAutoScroll() { clearInterval(trendingScrollTimer); }
+
+        async function loadTrending() {
+            try {
+                const r = await fetch(`/api/trending?uid=${uid}`);
+                const data = await r.json();
+                if(data.length === 0) return;
+                
+                currentHeroMovie = data[0];
+                loadedMovies[currentHeroMovie._id] = currentHeroMovie;
+                document.getElementById('heroBanner').style.display = 'block';
+                document.getElementById('heroImg').src = getImageUrl(currentHeroMovie.photo_id);
+                document.getElementById('heroTitle').innerText = currentHeroMovie._id;
+                
+                let heroMeta = currentHeroMovie.genres ? currentHeroMovie.genres.join(' • ') : '';
+                let heroLangHtml = '';
+                if(currentHeroMovie.language && currentHeroMovie.language !== 'N/A' && currentHeroMovie.language !== 'Not Specified') {
+                    heroLangHtml = `<span style="background: linear-gradient(45deg, var(--primary), #be123c); color: white; padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 800; margin-right: 8px; box-shadow: 0 0 10px var(--primary-glow);"><i class="fa-solid fa-language"></i> ${currentHeroMovie.language}</span>`;
+                }
+                document.getElementById('heroGenres').innerHTML = heroLangHtml + heroMeta;
+
+                const grid = document.getElementById('trendingList');
+                grid.innerHTML = data.slice(1).map(m => {
+                    loadedMovies[m._id] = m;
+                    let langText = (m.language && m.language !== "N/A" && m.language !== "Not Specified") ? ` ${m.language}` : "";
+                    let fullTitle = `${m._id}${langText}`;
+                    let fileCount = m.files ? m.files.length : 1;
+                    
+                    return `<div class="h-card" onclick="openQualitySheet('${m._id.replace(/'/g, "\\'")}')">
+                        <div class="img-wrap">
+                            <img src="${getImageUrl(m.photo_id)}" loading="lazy">
+                            <div class="views-tag"><i class="fa-solid fa-eye"></i> ${formatViews(m.clicks)}</div>
+                            <div class="quality-tag" style="background:var(--primary);"><i class="fa-solid fa-fire"></i> HOT</div>
+                        </div>
+                        <div class="card-title">${fullTitle}</div>
+                    </div>`;
+                }).join('');
+                
+                grid.addEventListener('touchstart', stopTrendingAutoScroll, {passive: true});
+                grid.addEventListener('touchend', startTrendingAutoScroll);
+                grid.addEventListener('mouseenter', stopTrendingAutoScroll);
+                grid.addEventListener('mouseleave', startTrendingAutoScroll);
+                startTrendingAutoScroll(); 
+
+            } catch(e) {}
+        }
+
+        function playHero() { if(currentHeroMovie) openQualitySheet(currentHeroMovie._id); }
+
+        function renderPagination(totalPages, currentPage) {
+            if(totalPages <= 1) return "";
+            let html = "";
+            if(currentPage > 1) html += `<button class="page-btn" onclick="loadMovies(${currentPage - 1})"><i class="fa-solid fa-chevron-left"></i> Prev</button>`;
+            let startPage = Math.max(1, currentPage - 1);
+            let endPage = Math.min(totalPages, currentPage + 1);
+            if (startPage > 1) html += `<button class="page-btn" onclick="loadMovies(1)">1</button> ... `;
+            for(let i = startPage; i <= endPage; i++) {
+                let active = i === currentPage ? "active" : "";
+                html += `<button class="page-btn ${active}" onclick="loadMovies(${i})">${i}</button>`;
+            }
+            if (endPage < totalPages) html += ` ... <button class="page-btn" onclick="loadMovies(${totalPages})">${totalPages}</button>`;
+            if(currentPage < totalPages) html += `<button class="page-btn" onclick="loadMovies(${currentPage + 1})">Next <i class="fa-solid fa-chevron-right"></i></button>`;
+            return html;
+        }
+
+        async function loadMovies(page = 1) {
+            currentPage = page;
+            const grid = document.getElementById('movieGrid');
+            grid.innerHTML = "<p style='color:var(--text-muted); text-align:center; width:100%; grid-column:span 2;'><i class='fa-solid fa-spinner fa-spin'></i> Loading...</p>";
+
+            try {
+                const r = await fetch(`/api/list?page=${page}&uid=${uid}&genre=${currentGenre}`);
+                const data = await r.json();
+                
+                if(data.movies.length===0) {
+                    grid.innerHTML = "<p style='color:var(--text-muted); text-align:center; width:100%; grid-column:span 2;'>No movies found in this category.</p>";
+                    document.getElementById('paginationBox').innerHTML = "";
+                    return;
+                }
+                
+                grid.innerHTML = data.movies.map(m => {
+                    loadedMovies[m._id] = m;
+                    let langText = (m.language && m.language !== "N/A" && m.language !== "Not Specified") ? ` ${m.language}` : "";
+                    let fullTitle = `${m._id}${langText}`;
+                    let fileCount = m.files ? m.files.length : 1;
+
+                    return `<div class="h-card" onclick="openQualitySheet('${m._id.replace(/'/g, "\\'")}')">
+                        <div class="img-wrap">
+                            <img src="${getImageUrl(m.photo_id)}" loading="lazy">
+                            <div class="views-tag"><i class="fa-solid fa-eye"></i> ${formatViews(m.clicks)}</div>
+                            <div class="quality-tag"><i class="fa-solid fa-list"></i> ${fileCount}</div>
+                        </div>
+                        <div class="card-title">${fullTitle}</div>
+                    </div>`;
+                }).join('');
+                
+                document.getElementById('paginationBox').innerHTML = renderPagination(data.total_pages, currentPage);
+                if(page > 1) document.getElementById('latestTitle').scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+            } catch(e) { grid.innerHTML = "<p style='color:var(--primary); text-align:center; width:100%; grid-column:span 2;'>Failed to load movies.</p>"; }
+        }
+
+        let searchTimeout;
+        document.getElementById('searchInput').addEventListener('input', (e) => {
+            clearTimeout(searchTimeout);
+            const q = e.target.value.trim();
+            if(q === "") return document.getElementById('searchGrid').innerHTML = "";
+            searchTimeout = setTimeout(async () => {
+                const grid = document.getElementById('searchGrid');
+                grid.innerHTML = "<p style='color:var(--text-muted); text-align:center; width:100%; grid-column:span 2;'>Searching...</p>";
+                try {
+                    const r = await fetch(`/api/list?page=1&q=${encodeURIComponent(q)}&uid=${uid}&genre=All`);
+                    const data = await r.json();
+                    if(data.movies.length===0) return grid.innerHTML = "<p style='color:var(--text-muted); text-align:center; width:100%; grid-column:span 2;'>No movies found.</p>";
+                    
+                    grid.innerHTML = data.movies.map(m => {
+                        loadedMovies[m._id] = m;
+                        let langText = (m.language && m.language !== "N/A" && m.language !== "Not Specified") ? ` ${m.language}` : "";
+                        let fullTitle = `${m._id}${langText}`;
+                        let fileCount = m.files ? m.files.length : 1;
+
+                        return `<div class="h-card" onclick="openQualitySheet('${m._id.replace(/'/g, "\\'")}')">
+                            <div class="img-wrap">
+                                <img src="${getImageUrl(m.photo_id)}" loading="lazy">
+                                <div class="views-tag"><i class="fa-solid fa-eye"></i> ${formatViews(m.clicks)}</div>
+                                <div class="quality-tag"><i class="fa-solid fa-list"></i> ${fileCount}</div>
+                            </div>
+                            <div class="card-title">${fullTitle}</div>
+                        </div>`;
+                    }).join('');
+                } catch(e) {}
+            }, 500);
+        });
+
+        function switchSheetTab(tab) {
+            document.getElementById('tabBtnFiles').classList.remove('active');
+            document.getElementById('tabBtnReviews').classList.remove('active');
+            document.getElementById('sheetSectionFiles').style.display = 'none';
+            document.getElementById('sheetSectionReviews').style.display = 'none';
+            
+            if(tab === 'files') {
+                document.getElementById('tabBtnFiles').classList.add('active');
+                document.getElementById('sheetSectionFiles').style.display = 'block';
+            } else {
+                document.getElementById('tabBtnReviews').classList.add('active');
+                document.getElementById('sheetSectionReviews').style.display = 'block';
+                loadReviews(currentlyViewingMovie);
+            }
+        }
+
+        function setRating(val) {
+            currentRating = val;
+            const stars = document.getElementById('starInputBox').children;
+            for(let i=0; i<5; i++) {
+                if(i < val) stars[i].style.color = "#facc15";
+                else stars[i].style.color = "#555";
+            }
+        }
+
+        async function submitReview() {
+            const txt = document.getElementById('revTextInput').value.trim();
+            const uname = document.getElementById('uName').innerText || "User";
+            try {
+                const res = await fetch('/api/review', { 
+                    method: 'POST', headers: {'Content-Type': 'application/json'}, 
+                    body: JSON.stringify({uid: uid, uname: uname, movie: currentlyViewingMovie, rating: currentRating, text: txt, initData: INIT_DATA})
+                });
+                const data = await res.json();
+                if(data.ok) {
+                    showToast("✅ Review submitted!");
+                    document.getElementById('revTextInput').value = '';
+                    loadReviews(currentlyViewingMovie);
+                }
+            } catch(e) {}
+        }
+
+        async function loadReviews(movieTitle) {
+            const div = document.getElementById('reviewsListDiv');
+            div.innerHTML = '<p style="text-align:center; color:gray;">Loading reviews...</p>';
+            try {
+                const res = await fetch('/api/reviews?movie=' + encodeURIComponent(movieTitle));
+                const data = await res.json();
+                
+                document.getElementById('revAvg').innerText = data.average;
+                document.getElementById('revCount').innerText = `${data.count} reviews`;
+                
+                let starHtml = '';
+                let fullStars = Math.floor(data.average);
+                for(let i=0; i<5; i++) {
+                    if(i < fullStars) starHtml += '<i class="fa-solid fa-star"></i>';
+                    else starHtml += '<i class="fa-solid fa-star text-gray-500"></i>';
+                }
+                document.getElementById('revStars').innerHTML = starHtml;
+
+                if(data.reviews.length === 0) {
+                    div.innerHTML = '<p style="text-align:center; color:gray; font-size:13px; margin-top:20px;">No reviews yet. Be the first!</p>';
+                    return;
+                }
+
+                div.innerHTML = data.reviews.map(r => {
+                    let rStars = '';
+                    for(let i=0; i<5; i++) { rStars += (i < r.rating) ? '<i class="fa-solid fa-star" style="color:#facc15; font-size:10px;"></i>' : '<i class="fa-solid fa-star" style="color:#555; font-size:10px;"></i>'; }
+                    let delBtn = isAdmin ? `<button onclick="deleteReview('${r.id}')" style="background:transparent; border:none; color:var(--primary); cursor:pointer;"><i class="fa-solid fa-trash"></i></button>` : '';
+
+                    return `
+                    <div class="review-box">
+                        <div style="display:flex; justify-content:space-between; margin-bottom:5px;">
+                            <div style="font-weight:bold; font-size:13px;"><i class="fa-solid fa-user-circle text-gray-400"></i> ${r.uname}</div>
+                            <div>${rStars} ${delBtn}</div>
+                        </div>
+                        <div style="font-size:13px; color:var(--text-muted);">${r.text}</div>
+                    </div>`;
+                }).join('');
+            } catch(e) {}
+        }
+
+        async function deleteReview(id) {
+            if(!confirm("Delete this review?")) return;
+            try {
+                await fetch('/api/review/' + id + '?initData=' + encodeURIComponent(INIT_DATA), { method: 'DELETE' });
+                loadReviews(currentlyViewingMovie);
+            } catch(e) {}
+        }
+
+        let activeFileId = null; 
+        let onAdCompleteCallback = null;
+        let adStartTime = 0;
+        let isWaitingForAd = false;
+        let adFallbackTimer = null;
+
+        function openQualitySheet(title) {
+            const movie = loadedMovies[title];
+            if(!movie) return;
+            
+            currentlyViewingMovie = title;
+            switchSheetTab('files');
+
+            document.getElementById('sheetMovieTitle').innerText = title;
+            let listHtml = movie.files.map(f => {
+                let isFree = f.is_unlocked || isUserVip;
+                let icon = isFree ? '<i class="fa-solid fa-cloud-arrow-down" style="color:var(--success);"></i>' : '<i class="fa-solid fa-lock" style="color:var(--primary);"></i>';
+                let rgbClass = isFree ? "rgb-button" : "";
+                let cls = isFree ? `file-unlocked ${rgbClass}` : 'file-locked';
+                let btnText = `📥 Download ${f.quality}`;
+                
+                return `<div class="file-item ${cls}" onclick="handleQualityClick('${f.id}', ${f.is_unlocked})">
+                    <span>${btnText}</span> ${icon}
+                </div>`;
+            }).join('');
+            
+            document.getElementById('qualityList').innerHTML = listHtml;
+            setRating(5);
+            openModal('qualitySheet');
+        }
+
+        function handleQualityClick(fileId, isUnlocked) {
+            closeModal('qualitySheet');
+            if(isUnlocked || isUserVip) { sendFile(fileId); } 
+            else { 
+                activeFileId = fileId; 
+                onAdCompleteCallback = () => sendFile(activeFileId);
+                const btn = document.getElementById('dlClickBtn');
+                btn.disabled = false;
+                btn.innerText = '📺 অ্যাড দেখে আনলক করুন';
+                btn.style.background = "linear-gradient(45deg, var(--primary), #be123c)";
+                openModal('unlockSheet');
+            }
+        }
+
+        function executeDirectLink() {
+            if (!DIRECT_LINKS || DIRECT_LINKS.length === 0) {
+                closeModal('unlockSheet');
+                if (onAdCompleteCallback) onAdCompleteCallback();
+                return;
+            }
+            let linkIndex = parseInt(localStorage.getItem('dl_index') || '0');
+            if (linkIndex >= DIRECT_LINKS.length) linkIndex = 0;
+            const selectedLink = DIRECT_LINKS[linkIndex];
+            localStorage.setItem('dl_index', linkIndex + 1);
+
+            try { tg.openLink(selectedLink); } 
+            catch(e) { window.open(selectedLink, '_blank'); }
+
+            const btn = document.getElementById('dlClickBtn');
+            btn.disabled = true;
+            btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> লিংক চেক করা হচ্ছে...`;
+            btn.style.background = "var(--surface-light)";
+
+            adStartTime = Date.now();
+            isWaitingForAd = true;
+
+            clearTimeout(adFallbackTimer);
+            adFallbackTimer = setTimeout(() => {
+                if (isWaitingForAd) {
+                    let timeSpent = (Date.now() - adStartTime) / 1000;
+                    if (timeSpent >= 10) unlockSuccess();
+                }
+            }, 12000);
+        }
+
+        function handleReturnFromAd() {
+            if (!isWaitingForAd) return;
+            let timeSpent = (Date.now() - adStartTime) / 1000;
+            if (timeSpent < 10) {
+                isWaitingForAd = false;
+                clearTimeout(adFallbackTimer);
+                showToast("⚠️ আপনি লিংকে ১০ সেকেন্ড অপেক্ষা করেননি! আবার চেষ্টা করুন।", "error");
+                const btn = document.getElementById('dlClickBtn');
+                btn.disabled = false;
+                btn.innerText = '📺 আবার চেষ্টা করুন';
+                btn.style.background = "linear-gradient(45deg, var(--primary), #be123c)";
+            } else { unlockSuccess(); }
+        }
+
+        function unlockSuccess() {
+            isWaitingForAd = false;
+            clearTimeout(adFallbackTimer);
+            const btn = document.getElementById('dlClickBtn');
+            btn.innerHTML = '<i class="fa-solid fa-check"></i> আনলক সফল!';
+            btn.style.background = "var(--success)";
+            setTimeout(() => {
+                closeModal('unlockSheet');
+                if (onAdCompleteCallback) onAdCompleteCallback();
+            }, 1000);
+        }
+        
+        function shareToUnlock() {
+            let shareUrl = `https://t.me/share/url?url=https://t.me/${BOT_UNAME}?start=ref_${uid}&text=🔥%20Download%20Movies%20Directly!`;
+            try { tg.openTelegramLink(shareUrl); } catch(e) { window.open(shareUrl, '_blank'); }
+            showToast("১ জন বন্ধুকে জয়েন করালেই ১ দিন VIP ফ্রি পাবেন! সব মুভি আনলক হয়ে যাবে।", "success");
+        }
+
+        document.addEventListener("visibilitychange", () => { if (document.visibilityState === 'visible') setTimeout(handleReturnFromAd, 500); });
+        window.addEventListener("focus", () => { setTimeout(handleReturnFromAd, 500); });
+
+        async function sendFile(id) {
+            showToast("⏳ Sending to bot inbox...", "success");
+            try {
+                const res = await fetch('/api/send', { 
+                    method: 'POST', headers: {'Content-Type': 'application/json'}, 
+                    body: JSON.stringify({userId: uid, movieId: id, initData: INIT_DATA})
+                });
+                const responseData = await res.json();
+                if(!responseData.ok) {
+                    if(responseData.msg === "Too fast") return showToast("Please wait 5 seconds!", "error");
+                    return showToast("Verification failed!", "error");
+                }
+                showToast("✅ Successfully sent to your inbox!");
+                setTimeout(() => tg.close(), 2500);
+            } catch (e) { showToast("Network Error", "error"); }
+        }
+
+        async function claimCheckin() {
+            try {
+                const res = await fetch('/api/checkin', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({uid: uid, action: "claim", initData: INIT_DATA}) });
+                const data = await res.json();
+                if(data.ok) { 
+                    let msg = `🎉 +${data.coins} Coins added! (Day ${data.streak})`;
+                    if(data.got_vip) msg += " + 1 Day VIP Free!";
+                    showToast(msg); fetchUserInfo(); 
+                }
+                else showToast(data.msg || "Already claimed today!", "warning");
+            } catch(e) {}
+        }
+        
+        function watchAdForCoins(slot) {
+            let lastWatched = localStorage.getItem(`adSlot_${slot}_${new Date().toDateString()}`);
+            if(lastWatched) return showToast("You already used this slot today!", "warning");
+
+            onAdCompleteCallback = async () => {
+                const res = await fetch('/api/reward_ad', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({uid: uid, initData: INIT_DATA})});
+                if((await res.json()).ok) { 
+                    localStorage.setItem(`adSlot_${slot}_${new Date().toDateString()}`, "done");
+                    showToast("🎉 +5 Coins earned!"); fetchUserInfo(); 
+                }
+            };
+            document.getElementById('dlClickBtn').disabled = false;
+            document.getElementById('dlClickBtn').innerText = '📺 অ্যাড দেখে কয়েন নিন';
+            document.getElementById('dlClickBtn').style.background = "linear-gradient(45deg, var(--primary), #be123c)";
+            openModal('unlockSheet');
+        }
+        
+        function openQuiz() {
+            if(!canQuizPlay) return showToast("You already played today! Come back tomorrow.", "warning");
+            currentQuiz = quizzes[Math.floor(Math.random() * quizzes.length)];
+            document.getElementById('quizEmoji').innerText = currentQuiz.q;
+            let optsHtml = currentQuiz.opts.map(o => `<button class="btn-outline" style="margin-top:0; border-color:var(--surface-light); font-size:14px; padding:10px;" onclick="submitQuiz('${o}')">${o}</button>`).join('');
+            document.getElementById('quizOptions').innerHTML = optsHtml;
+            openModal('quizModal');
+        }
+        
+        async function submitQuiz(answer) {
+            if(answer !== currentQuiz.ans) return showToast("❌ Wrong Answer! Try another option.", "error");
+            closeModal('quizModal');
+            try {
+                const res = await fetch('/api/quiz_reward', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({uid: uid, initData: INIT_DATA}) });
+                const data = await res.json();
+                if(data.ok) { showToast("🎉 Correct! +10 Coins added."); fetchUserInfo(); }
+            } catch(e){}
+        }
+
+        async function convertCoins() {
+            try {
+                const res = await fetch('/api/checkin', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({uid: uid, action: "convert", initData: INIT_DATA}) });
+                const data = await res.json();
+                if(data.ok) { showToast("✅ VIP activated successfully!"); fetchUserInfo(); }
+                else showToast(data.msg || "Not enough coins! (50 required)", "error");
+            } catch(e) {}
+        }
+
+        function copyReferLink() { navigator.clipboard.writeText(document.getElementById('refLinkText').innerText).then(() => { showToast("✅ Invite Link Copied!"); }); }
+
+        let selectedPayMethod = "";
+        function selectPayment(method) {
+            selectedPayMethod = method;
+            document.getElementById('payBox').style.display = 'block';
+            document.getElementById('payNumberText').innerText = method === 'bkash' ? BKASH_NO : NAGAD_NO;
+        }
+        
+        async function submitPayment() {
+            const trxId = document.getElementById('trxIdInput').value.trim();
+            if(trxId.length < 5) return showToast("Enter a valid TrxID!", "error");
+            let selectedRadio = document.querySelector('input[name="vip_pkg"]:checked');
+            try {
+                const res = await fetch('/api/payment/submit', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({uid: uid, method: selectedPayMethod, trx_id: trxId, days: parseInt(selectedRadio.value), price: parseInt(selectedRadio.getAttribute('data-price')), initData: INIT_DATA}) });
+                const data = await res.json();
+                if(data.ok) { showToast("✅ Request sent! Admin will verify soon."); closeModal('vipModal'); } 
+                else { showToast(data.msg, "error"); }
+            } catch(e) {}
+        }
+
+        async function loadLeaderboard() {
+            const lbList = document.getElementById('lbList');
+            lbList.innerHTML = "<p style='color:var(--text-muted); text-align:center;'>Loading...</p>";
+            try {
+                const res = await fetch('/api/leaderboard');
+                const data = await res.json();
+                if(data.length===0) return lbList.innerHTML = "<p style='color:var(--text-muted); text-align:center;'>No data found.</p>";
+                lbList.innerHTML = data.map((u, i) => `
+                    <div style="display:flex; justify-content:space-between; padding:15px; background:var(--surface-light); margin-bottom:8px; border-radius:10px;">
+                        <div><span style="color:var(--warning); font-weight:800; margin-right:10px;">#${i+1}</span> <b>${u.name}</b></div>
+                        <span style="color:var(--success); font-weight:800;"><i class="fa-solid fa-users"></i> ${u.refers}</span>
+                    </div>
+                `).join('');
+            } catch(e) {}
+        }
+
+        async function loadRequests() {
+            const reqList = document.getElementById('reqList');
+            reqList.innerHTML = "<p style='color:var(--text-muted); text-align:center; padding-top:20px;'><i class='fa-solid fa-spinner fa-spin'></i> Fetching requests...</p>";
+            try {
+                const res = await fetch('/api/requests');
+                const data = await res.json();
+                if(data.length === 0) return reqList.innerHTML = "<p style='color:var(--text-muted); text-align:center; padding-top:20px;'>No requests found.</p>";
+                
+                reqList.innerHTML = data.map(r => {
+                    let hasVoted = r.voters.includes(uid);
+                    let btnStyle = hasVoted ? "background:var(--surface-light); color:var(--text-muted);" : "background:var(--primary); color:white;";
+                    let delBtn = isAdmin ? `<button onclick="deleteReq('${r.id}')" style="background:transparent; border:none; color:var(--primary); cursor:pointer; padding:5px; font-size:16px; margin-left:10px;"><i class="fa-solid fa-trash"></i></button>` : '';
+                    
+                    return `
+                    <div style="background:var(--surface); border:1px solid var(--surface-light); padding:15px; border-radius:14px; margin-bottom:12px; display:flex; justify-content:space-between; align-items:center; border-left: 4px solid var(--primary);">
+                        <div style="flex:1; overflow:hidden;">
+                            <div style="font-size:11px; color:var(--warning); font-weight:800; margin-bottom:5px; display:flex; align-items:center; gap:5px;"><i class="fa-solid fa-user-astronaut"></i> ${r.uname}</div>
+                            <div style="font-size:15px; font-weight:800; color:white; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${r.movie}</div>
+                        </div>
+                        <div style="display:flex; align-items:center;">
+                            <button onclick="voteRequest('${r.id}')" style="${btnStyle} border:none; padding:8px 15px; border-radius:10px; font-weight:bold; font-size:14px; cursor:pointer; box-shadow:0 2px 5px rgba(0,0,0,0.2);" ${hasVoted?'disabled':''}>
+                                <i class="fa-solid fa-caret-up"></i> ${r.votes}
+                            </button>
+                            ${delBtn}
+                        </div>
+                    </div>
+                    `;
+                }).join('');
+            } catch(e) {}
+        }
+
+        async function sendReq() {
+            const text = document.getElementById('reqText').value.trim();
+            if(!text) return showToast("Enter movie name!", "warning");
+            const uname = document.getElementById('uName').innerText || "User";
+            try {
+                const res = await fetch('/api/request', { 
+                    method: 'POST', headers: {'Content-Type': 'application/json'}, 
+                    body: JSON.stringify({uid: uid, uname: uname, movie: text, initData: INIT_DATA})
+                });
+                const data = await res.json();
+                if(data.ok) {
+                    document.getElementById('reqText').value = '';
+                    showToast("✅ Request submitted!"); loadRequests();
+                }
+            } catch (e) { showToast("Error submitting request", "error"); }
+        }
+
+        async function voteRequest(id) {
+            try {
+                await fetch('/api/requests/vote', { 
+                    method: 'POST', headers: {'Content-Type': 'application/json'}, 
+                    body: JSON.stringify({uid: uid, req_id: id, initData: INIT_DATA})
+                });
+                loadRequests();
+            } catch (e) {}
+        }
+        
+        async function deleteReq(id) {
+            if(!confirm('Are you sure you want to delete this request?')) return;
+            try {
+                await fetch('/api/requests/' + id + '?initData=' + encodeURIComponent(INIT_DATA), { method: 'DELETE' });
+                showToast("🗑️ Request deleted"); loadRequests();
+            } catch(e) {}
+        }
+
+        fetchUserInfo(); 
+    </script>
+</body>
+</html>
